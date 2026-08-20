@@ -155,9 +155,17 @@ def start() -> None:
         format="%(asctime)s  %(levelname)-5s  %(name)s  %(message)s",
         datefmt="%H:%M:%S",
     )
-    # Quiet the noisy Slack / httpx internals — we only want theorycraft logs at INFO.
-    for noisy in ("slack_bolt", "slack_sdk", "httpx", "httpcore", "litellm"):
+    # Quiet noisy internals — we only want theorycraft logs at INFO.
+    for noisy in ("slack_bolt", "slack_sdk", "httpx", "httpcore", "litellm", "LiteLLM"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    # LiteLLM also logs via its own verbose flag independent of the logging module.
+    try:
+        import litellm
+        litellm.verbose = False
+        litellm.suppress_debug_info = True
+    except Exception:
+        pass
 
     from theorycraft.config import get_settings
     cfg = get_settings()
