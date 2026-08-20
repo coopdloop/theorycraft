@@ -1,0 +1,34 @@
+[project]
+name = "theorycraft"
+version = "0.1.0"
+description = "Collaborative LangGraph agent that theory-crafts product ideas and generates product-as-code specs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "instructor>=1.3",
+    "langchain-core>=0.3",
+    "langfuse>=2.0",
+    "langgraph>=0.2",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "litellm>=1.40",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.0",
+    "pygithub>=2.3",
+    "python-slugify>=8.0",
+    "rich>=13.0",
+    "typer>=0.12",
+]
+
+[project.scripts]
+theorycraft = "theorycraft.cli:app"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]

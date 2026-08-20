@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+build/
+dist/
+wheels/
+
+# uv / venv
+.venv/
+.python-version
+
+# Environment — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# MCP config (may contain tokens/secrets)
+.theorycraft.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Test cache / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# theorycraft output specs (user-generated, not source)
+# Only ignore root-level and session-output product.json, not test fixtures
+/product.json
+/product_*.json
+*/product.json
+*/product_*.json
+!tests/fixtures/product.json

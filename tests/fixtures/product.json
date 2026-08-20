@@ -1,0 +1,180 @@
+{
+  "schema_version": "1.0.0",
+  "session_id": "fixture-001",
+  "created_at": "2026-08-19T00:00:00+00:00",
+  "generated_by": "theorycraft",
+  "vision": {
+    "name": "TaskFlow",
+    "tagline": "Team task management, reimagined",
+    "description": "TaskFlow is a real-time collaborative task management platform for small teams. It provides workspaces, projects, and tasks with SSE-based live updates, file attachments, and Slack notifications.",
+    "goals": ["Reduce manual workflow steps by 60%", "Support teams up to 50 users"],
+    "target_users": ["Team leads", "Individual contributors"],
+    "problem_statement": "Teams lose context across tools and miss deadlines because task management is fragmented.",
+    "success_metrics": ["5,000 DAU in 6 months", "< 2s p99 API latency"]
+  },
+  "services": [
+    {
+      "name": "api",
+      "language": "go",
+      "description": "Primary REST API gateway",
+      "responsibilities": ["Authentication", "Task CRUD", "WebSocket/SSE hub"],
+      "tech_stack": ["gin", "sqlc", "pgx"],
+      "suggested_framework": "gin",
+      "port": 8080,
+      "dependencies": [],
+      "environment_variables": [
+        {"name": "DATABASE_URL", "description": "PostgreSQL connection string", "required": true, "example": "postgres://user:pass@localhost:5432/taskflow"}
+      ]
+    }
+  ],
+  "api_routes": [
+    {
+      "service_name": "api",
+      "method": "GET",
+      "path": "/health",
+      "summary": "Health check",
+      "description": null,
+      "request_body": null,
+      "path_params": [],
+      "query_params": [],
+      "responses": [{"status_code": 200, "description": "OK", "schema": null}],
+      "auth_required": false,
+      "tags": ["system"]
+    },
+    {
+      "service_name": "api",
+      "method": "POST",
+      "path": "/auth/register",
+      "summary": "Register a new user",
+      "request_body": {
+        "type": "object",
+        "properties": {
+          "email": {"type": "string", "format": "email"},
+          "password": {"type": "string", "format": "password"},
+          "name": {"type": "string"}
+        },
+        "required": ["email", "password", "name"]
+      },
+      "path_params": [],
+      "query_params": [],
+      "responses": [{"status_code": 201, "description": "User created"}],
+      "auth_required": false,
+      "tags": ["auth"]
+    }
+  ],
+  "db_schema": {
+    "tables": [
+      {
+        "name": "users",
+        "service_name": "api",
+        "columns": [
+          {"name": "id", "sql_type": "UUID", "nullable": false, "default": "gen_random_uuid()", "comment": null},
+          {"name": "email", "sql_type": "TEXT", "nullable": false, "default": null, "comment": null},
+          {"name": "name", "sql_type": "TEXT", "nullable": false, "default": null, "comment": null},
+          {"name": "created_at", "sql_type": "TIMESTAMPTZ", "nullable": false, "default": "NOW()", "comment": null},
+          {"name": "updated_at", "sql_type": "TIMESTAMPTZ", "nullable": false, "default": "NOW()", "comment": null}
+        ],
+        "primary_key": ["id"],
+        "foreign_keys": [],
+        "indexes": [{"name": "idx_users_email", "columns": ["email"], "unique": true}],
+        "comment": "Platform users"
+      }
+    ],
+    "raw_sql": "CREATE TABLE users (\n  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n  email TEXT NOT NULL UNIQUE,\n  name TEXT NOT NULL,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE UNIQUE INDEX idx_users_email ON users (email);\n"
+  },
+  "frontend": {
+    "framework": "react",
+    "state_management": "zustand",
+    "routing": "react-router-v6",
+    "pages": [
+      {
+        "path": "/",
+        "name": "Dashboard",
+        "description": "Overview of all projects and recent tasks",
+        "auth_required": true,
+        "components": [
+          {"name": "ProjectList", "description": "Grid of project cards", "props": ["projects", "onSelect"], "notes": null},
+          {"name": "RecentTasksFeed", "description": "Live feed of recent task updates", "props": ["tasks"], "notes": "Uses SSE for live updates"}
+        ],
+        "state_slice": "projects"
+      },
+      {
+        "path": "/login",
+        "name": "Login",
+        "description": "Email + password login form",
+        "auth_required": false,
+        "components": [
+          {"name": "LoginForm", "description": "Email/password form with validation", "props": ["onSuccess"], "notes": null}
+        ],
+        "state_slice": null
+      }
+    ],
+    "shared_components": [
+      {"name": "Navbar", "description": "Top navigation with user menu", "props": ["user"], "notes": null},
+      {"name": "TaskCard", "description": "Reusable task card for lists and grids", "props": ["task", "onUpdate", "onDelete"], "notes": null}
+    ],
+    "design_notes": "Data-dense dashboard with sidebar navigation. Use shadcn/ui + Tailwind CSS. Dark mode first. Typography: Inter. Accent color: indigo-500.",
+    "theme": "shadcn/ui + tailwind"
+  },
+  "sdk": {
+    "package_name": "@taskflow/client",
+    "language": "typescript",
+    "clients": [
+      {
+        "service_name": "api",
+        "class_name": "TaskFlowClient",
+        "description": "Main API client for the TaskFlow API",
+        "methods": [
+          {
+            "name": "register",
+            "description": "Register a new user account",
+            "parameters": [
+              {"name": "data", "typescript_type": "RegisterInput", "required": true, "description": "Registration payload"}
+            ],
+            "return_type": "Promise<User>",
+            "typescript_signature": "register(data: RegisterInput): Promise<User>",
+            "maps_to_route": "POST /auth/register",
+            "example": "const user = await client.register({ email: 'a@b.com', password: 'secret', name: 'Alice' });"
+          }
+        ],
+        "typescript_types": [
+          "export interface User { id: string; email: string; name: string; createdAt: string; }",
+          "export interface RegisterInput { email: string; password: string; name: string; }"
+        ]
+      }
+    ],
+    "shared_types": ["export type ApiError = { code: string; message: string; };"],
+    "auth_pattern": "JWT Bearer token stored in memory (not localStorage). Injected via Authorization header on all authenticated requests.",
+    "base_url_config": "Pass baseUrl to constructor or set VITE_API_URL environment variable."
+  },
+  "architecture": {
+    "adrs": [
+      {
+        "id": "ADR-001",
+        "title": "Go for the API service",
+        "status": "accepted",
+        "context": "We need a performant, typed API that can handle concurrent SSE connections efficiently.",
+        "decision": "Use Go with the gin framework for the API service.",
+        "rationale": "Go's goroutines handle SSE fan-out well. gin is minimal and fast. sqlc gives type-safe SQL without an ORM.",
+        "consequences": ["Team needs Go familiarity", "No ORM magic — SQL is explicit (this is a feature)"]
+      }
+    ],
+    "tech_choices": {
+      "backend": "Go 1.22 + gin + sqlc",
+      "database": "PostgreSQL 16",
+      "frontend": "React 18 + TypeScript + Vite",
+      "styling": "Tailwind CSS + shadcn/ui",
+      "state": "Zustand",
+      "real-time": "Server-Sent Events (SSE)"
+    },
+    "system_diagram_description": "Single Go API service behind a load balancer. PostgreSQL as primary store. React SPA served from CDN. SSE connections maintained to API for live updates."
+  },
+  "infrastructure": {
+    "deployment_target": "Docker Compose (dev) / Kubernetes (prod)",
+    "required_env_vars": ["DATABASE_URL", "JWT_SECRET", "PORT"],
+    "suggested_managed_services": ["AWS RDS (PostgreSQL)", "CloudFront (SPA CDN)"],
+    "scaling_notes": "API scales horizontally. SSE requires sticky sessions or a pub/sub layer (Redis) if multi-replica.",
+    "estimated_complexity": "medium"
+  },
+  "github_url": null
+}
