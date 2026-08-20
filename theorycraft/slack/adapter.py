@@ -91,14 +91,13 @@ async def drive_graph(
     """
     loop = asyncio.get_running_loop()
 
-    # Log user input (Command resumes carry the user's text).
     if hasattr(input_data, "resume"):
         user_text = str(input_data.resume)[:200].replace("\n", " ")
-        logger.info("[%s] user → %r", session.session_name, user_text)
+        logger.info("[%s]  ← user  %r", session.session_name, user_text)
     else:
-        logger.info("[%s] session start  thread=%s", session.session_name, session.thread_ts)
+        logger.info("[%s]  new session  thread=%s", session.session_name, session.thread_ts)
 
-    logger.info("[%s] graph.invoke → starting", session.session_name)
+    logger.info("[%s]  graph → running", session.session_name)
 
     thinking_msg = await say(
         text="thinking...",
@@ -115,7 +114,7 @@ async def drive_graph(
             input_data,
         )
     except Exception as exc:
-        logger.exception("[%s] graph.invoke failed", session.session_name)
+        logger.exception("[%s]  graph error", session.session_name)
         text, blocks = format_error(f"Something went wrong: {exc}")
         await say(text=text, blocks=blocks, thread_ts=session.thread_ts)
         store.set_status(session.thread_ts, "waiting")
@@ -131,7 +130,7 @@ async def drive_graph(
     interrupts = result.get("__interrupt__")
 
     if not interrupts:
-        logger.info("[%s] session complete → output=%s", session.session_name, result.get("output_path", "none"))
+        logger.info("[%s]  complete  output=%s", session.session_name, result.get("output_path", "none"))
         store.set_status(session.thread_ts, "complete")
         text, blocks = format_completion(result)
         await say(text=text, blocks=blocks, thread_ts=session.thread_ts)
@@ -144,12 +143,8 @@ async def drive_graph(
         interrupt_value = {"type": "unknown", "content": str(interrupt_value)}
 
     node_type = interrupt_value.get("type", "")
-    logger.info(
-        "[%s] interrupt  type=%-10s  round=%s",
-        session.session_name,
-        node_type,
-        interrupt_value.get("round", interrupt_value.get("revision_round", "-")),
-    )
+    round_val = interrupt_value.get("round", interrupt_value.get("revision_round", "-"))
+    logger.info("[%s]  interrupt  type=%-10s  round=%s", session.session_name, node_type, round_val)
 
     if node_type not in {"intake", "clarify", "ideate", "validate"}:
         await say(

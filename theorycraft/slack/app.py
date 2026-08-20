@@ -148,24 +148,70 @@ async def _run(bot_token: str, app_token: str) -> None:
     await handler.start_async()
 
 
-def start() -> None:
-    """Entry point: `uv run tc-slack` or `python -m theorycraft.slack.app`."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(levelname)-5s  %(name)s  %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    # Quiet noisy internals — we only want theorycraft logs at INFO.
-    for noisy in ("slack_bolt", "slack_sdk", "httpx", "httpcore", "litellm", "LiteLLM"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+def _setup_logging() -> None:
+    from rich.console import Console
+    from rich.logging import RichHandler
+    from rich.theme import Theme
 
-    # LiteLLM also logs via its own verbose flag independent of the logging module.
+    theme = Theme({
+        "logging.level.info":    "bold cyan",
+        "logging.level.warning": "bold yellow",
+        "logging.level.error":   "bold red",
+        "logging.level.debug":   "dim white",
+        "log.time":              "dim white",
+        "log.level":             "bold",
+    })
+    console = Console(theme=theme, highlight=True)
+
+    # Shorten theorycraft.* prefixes so they fit neatly in the name column.
+    _name_map = [
+        ("theorycraft.slack.",       "slack."),
+        ("theorycraft.llm.",         "llm."),
+        ("theorycraft.graph.nodes.", "node."),
+        ("theorycraft.integrations.","integr."),
+        ("theorycraft.",             "tc."),
+    ]
+
+    class _ShortenName(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            for old, new in _name_map:
+                if record.name.startswith(old):
+                    record.name = new + record.name[len(old):]
+                    break
+            return True
+
+    handler = RichHandler(
+        console=console,
+        show_time=True,
+        show_level=True,
+        show_path=False,
+        rich_tracebacks=True,
+        tracebacks_show_locals=False,
+        markup=False,          # don't interpret [ in log messages as markup
+        log_time_format="[%H:%M:%S]",
+        omit_repeated_times=False,
+    )
+    handler.addFilter(_ShortenName())
+
+    # force=True overrides any handlers already set by litellm / langfuse imports.
+    logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[handler], force=True)
+
+    # Silence noisy third-party loggers.
+    for _noisy in ("slack_bolt", "slack_sdk", "httpx", "httpcore", "litellm", "LiteLLM"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+    # LiteLLM also has its own verbose flag outside the logging module.
     try:
-        import litellm
-        litellm.verbose = False
-        litellm.suppress_debug_info = True
+        import litellm as _ll
+        _ll.verbose = False
+        _ll.suppress_debug_info = True
     except Exception:
         pass
+
+
+def start() -> None:
+    """Entry point: `uv run tc-slack` or `python -m theorycraft.slack.app`."""
+    _setup_logging()
 
     from theorycraft.config import get_settings
     cfg = get_settings()

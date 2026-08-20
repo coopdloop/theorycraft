@@ -34,15 +34,15 @@ def get_model() -> str:
 
 def _log_call(model: str, messages: list[dict], temperature: float, kind: str) -> None:
     last = messages[-1].get("content", "") if messages else ""
-    preview = str(last)[:120].replace("\n", " ")
-    logger.info("llm.%-10s  model=%-32s  msgs=%d  temp=%.1f  → %r", kind, model, len(messages), temperature, preview)
+    preview = str(last)[:100].replace("\n", " ")
+    logger.info("%-10s  %s  (%d msgs, temp=%.1f)  %r", kind, model, len(messages), temperature, preview)
 
 
 def _log_response(content: str, usage: Any) -> None:
     tokens = getattr(usage, "total_tokens", None) if usage else None
-    token_str = f"~{tokens} tok" if tokens else ""
-    preview = content[:120].replace("\n", " ")
-    logger.info("llm.response  %d chars  %s  %r", len(content), token_str, preview)
+    tok = f"{tokens} tok" if tokens else "? tok"
+    preview = content[:100].replace("\n", " ")
+    logger.info("%-10s  %d chars  %s  %r", "←", len(content), tok, preview)
 
 
 def structured_call(
