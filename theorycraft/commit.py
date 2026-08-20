@@ -299,8 +299,16 @@ def main(
     push: bool = typer.Option(False, "--push", "-p", help="Push after committing"),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would happen without committing"),
     all_files: bool = typer.Option(False, "--all", "-a", help="Stage all changes without prompting"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt (non-interactive)"),
+    commit_type: Optional[str] = typer.Option(None, "--type", "-t", help=f"Commit type ({', '.join(TYPE_KEYS)})"),
+    scope: Optional[str] = typer.Option(None, "--scope", "-s", help="Scope (optional)"),
+    subject: Optional[str] = typer.Option(None, "--subject", "-m", help="Commit subject line"),
+    body: Optional[str] = typer.Option(None, "--body", help="Commit body (optional)"),
+    footer: Optional[str] = typer.Option(None, "--footer", help="Commit footer, e.g. 'Closes #42'"),
+    breaking: bool = typer.Option(False, "--breaking", help="Mark as breaking change"),
+    files: Optional[str] = typer.Option(None, "--files", "-f", help="Comma-separated file numbers or paths to stage"),
 ) -> None:
-    """Interactive conventional commit CLI."""
+    """Interactive conventional commit CLI. Pass --type and --subject to skip prompts."""
     _print_header()
 
     # ── Check we're in a git repo ──────────────────────────────────────────
@@ -313,14 +321,34 @@ def main(
     console.print(f"[dim]Branch:[/] [yellow]{branch}[/]")
     console.print()
 
+    non_interactive = commit_type is not None and subject is not None
+
     # ── Staging ───────────────────────────────────────────────────────────
     all_changed = _git_status()
     already_staged = _staged_files()
     unstaged = [f for f in all_changed if f not in already_staged]
 
-    if all_files and unstaged:
+    if files is not None:
+        # Explicit file list: treat entries as paths or 1-based indices into unstaged
+        selected: list[str] = []
+        for token in files.split(","):
+            token = token.strip()
+            try:
+                idx = int(token) - 1
+                if 0 <= idx < len(unstaged):
+                    selected.append(unstaged[idx].path)
+            except ValueError:
+                selected.append(token)
+        if selected and not dry_run:
+            _stage_files(selected)
+        elif selected:
+            console.print(f"[dim][dry-run] would stage: {selected}[/]")
+    elif all_files and unstaged:
         _stage_files([f.path for f in unstaged])
     elif unstaged and not already_staged:
+        if non_interactive:
+            console.print("[red]Nothing staged and --files/--all not provided.[/]")
+            raise typer.Exit(1)
         paths = _pick_files_to_stage(unstaged)
         if not dry_run:
             _stage_files(paths)
@@ -329,7 +357,7 @@ def main(
     elif unstaged and already_staged:
         console.print(f"[dim]{len(already_staged)} file(s) already staged. {len(unstaged)} more unstaged:[/]")
         _show_status_table(unstaged, "Also unstaged")
-        if Confirm.ask("Stage remaining files too?", default=False):
+        if not non_interactive and Confirm.ask("Stage remaining files too?", default=False):
             if not dry_run:
                 _stage_files([f.path for f in unstaged])
 
@@ -344,22 +372,39 @@ def main(
         _show_status_table(staged_now, "Staged for commit")
 
     # ── Commit message ────────────────────────────────────────────────────
-    cc = _prompt_commit()
-
-    while True:
-        _preview_commit(cc)
-        action = Prompt.ask(
-            "[bold]confirm[/]",
-            choices=["commit", "edit", "abort"],
-            default="commit",
+    if non_interactive:
+        cc = ConventionalCommit(
+            type=commit_type,
+            scope=scope or "",
+            breaking=breaking,
+            subject=subject,
+            body=body or "",
+            footer=footer or "",
         )
-        if action == "commit":
-            break
-        if action == "edit":
-            cc = _prompt_commit(cc)
-        if action == "abort":
-            console.print("[dim]Aborted.[/]")
-            raise typer.Exit(0)
+        ok, err = cc.is_valid()
+        if not ok:
+            console.print(f"[red]✗[/] {err}")
+            raise typer.Exit(1)
+    else:
+        cc = _prompt_commit()
+
+    if non_interactive or yes:
+        _preview_commit(cc)
+    else:
+        while True:
+            _preview_commit(cc)
+            action = Prompt.ask(
+                "[bold]confirm[/]",
+                choices=["commit", "edit", "abort"],
+                default="commit",
+            )
+            if action == "commit":
+                break
+            if action == "edit":
+                cc = _prompt_commit(cc)
+            if action == "abort":
+                console.print("[dim]Aborted.[/]")
+                raise typer.Exit(0)
 
     # ── Commit ────────────────────────────────────────────────────────────
     msg = cc.render()
@@ -370,7 +415,6 @@ def main(
         if result.returncode != 0:
             console.print(f"[red]Commit failed:[/]\n{result.stderr}")
             raise typer.Exit(1)
-        # Show the short hash
         hash_r = _run(["git", "rev-parse", "--short", "HEAD"], check=False)
         short = hash_r.stdout.strip()
         console.print(f"\n[green]✓[/] Committed [bold]{short}[/]  [dim]{cc.type}: {cc.subject}[/]")
@@ -378,12 +422,12 @@ def main(
     # ── Push ──────────────────────────────────────────────────────────────
     remotes = _remotes()
 
-    if not push and not dry_run:
+    if not push and not dry_run and not non_interactive and not yes:
         push = Confirm.ask(f"\nPush [yellow]{branch}[/] to remote?", default=False)
 
     if push:
         remote = "origin"
-        if len(remotes) > 1:
+        if len(remotes) > 1 and not non_interactive and not yes:
             remote = Prompt.ask("Remote", choices=remotes, default="origin")
         elif not remotes:
             console.print("[yellow]No remotes configured — skipping push.[/]")
@@ -396,7 +440,6 @@ def main(
             console.print(f"[dim]Pushing to [bold]{remote}/{branch}[/]...[/]")
             result = _run(cmd, check=False)
             if result.returncode != 0:
-                # Try --set-upstream on first push
                 result2 = _run(["git", "push", "--set-upstream", remote, branch], check=False)
                 if result2.returncode != 0:
                     console.print(f"[red]Push failed:[/]\n{result2.stderr}")

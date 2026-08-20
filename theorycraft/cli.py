@@ -53,6 +53,30 @@ def _slugify(text: str) -> str:
     return slugify(text, max_length=40) or "my-product"
 
 
+def _parse_questions(text: str) -> list[str]:
+    """Extract numbered questions from an LLM-generated list."""
+    import re
+    # Split on lines that start with a number + period/paren
+    parts = re.split(r'\n\s*\d+[.)]\s*', text.strip())
+    # First part is any preamble before question 1 — drop if empty
+    questions = [p.strip() for p in parts if p.strip()]
+    # If no numbered structure found, treat the whole text as one question
+    return questions if len(questions) > 1 else [text.strip()]
+
+
+def _multiline_prompt(prompt_prefix: str, hint: str = "") -> str:
+    """Collect multiple lines until the user submits a blank line."""
+    if hint:
+        console.print(f"[dim]{hint}[/]")
+    lines: list[str] = []
+    while True:
+        line = Prompt.ask(prompt_prefix)
+        if line == "" and lines:
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _handle_interrupt(interrupt_payload: dict) -> str:
     """Render interrupt payload to the terminal and collect user input."""
     interrupt_type = interrupt_payload.get("type", "unknown")
@@ -69,13 +93,22 @@ def _handle_interrupt(interrupt_payload: dict) -> str:
 
     elif interrupt_type == "clarify":
         console.print()
-        console.print(Panel(
-            escape(interrupt_payload.get("questions", "")),
-            title=f"[yellow]clarify[/] [dim](round {interrupt_payload.get('round', 1)})[/]",
-            border_style="yellow",
-        ))
-        console.print("[dim]Answer all questions. Press Enter after each, or give a combined answer.[/]")
-        return Prompt.ask("[bold yellow]>[/]")
+        questions_text = interrupt_payload.get("questions", "")
+        round_num = interrupt_payload.get("round", 1)
+        questions = _parse_questions(questions_text)
+
+        answers: list[str] = []
+        for i, question in enumerate(questions, 1):
+            console.print()
+            console.print(Panel(
+                escape(question),
+                title=f"[yellow]clarify[/] [dim](round {round_num} · question {i}/{len(questions)})[/]",
+                border_style="yellow",
+            ))
+            answer = Prompt.ask("[bold yellow]>[/]")
+            answers.append(f"{i}. {answer}")
+
+        return "\n".join(answers)
 
     elif interrupt_type == "ideate":
         console.print()
@@ -84,8 +117,10 @@ def _handle_interrupt(interrupt_payload: dict) -> str:
             title=f"[green]theorycraft[/] [dim](round {interrupt_payload.get('round', 1)})[/]",
             border_style="green",
         ))
-        console.print("[dim]Steer the direction, add ideas, or type [bold]/ready[/] to build the spec.[/]")
-        return Prompt.ask("[bold green]>[/]")
+        return _multiline_prompt(
+            "[bold green]>[/]",
+            hint="Type /ready when happy, or share feedback (blank line to submit).",
+        )
 
     elif interrupt_type == "validate":
         console.print()
