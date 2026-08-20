@@ -16,7 +16,7 @@ A LangGraph agent loop that collaboratively theory-crafts product ideas with you
 Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone <repo>
+git clone https://github.com/coopdloop/theorycraft
 cd theorycraft
 cp .env.example .env        # fill in at minimum ANTHROPIC_API_KEY
 uv sync

@@ -5,7 +5,7 @@ Thanks for your interest in contributing.
 ## Getting started
 
 ```bash
-git clone <repo>
+git clone https://github.com/coopdloop/theorycraft
 cd theorycraft
 cp .env.example .env   # add ANTHROPIC_API_KEY at minimum
 uv sync
