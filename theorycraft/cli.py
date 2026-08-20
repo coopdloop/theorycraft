@@ -6,13 +6,11 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
-from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 from rich import print as rprint
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
@@ -105,94 +103,32 @@ def _handle_interrupt(interrupt_payload: dict) -> str:
         return Prompt.ask("[bold]>[/]")
 
 
-def _run_graph_loop(
-    graph,
-    initial_input: dict,
-    config: dict,
-    *,
-    skip_intake: bool = False,
-) -> None:
-    """Main HITL loop — streams graph, handles interrupts, resumes on user input."""
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        transient=True,
-    ) as progress:
-        task_id = progress.add_task("Starting session...", total=None)
-
-        # First invocation
-        input_to_send = initial_input
-
-        while True:
-            try:
-                current_node = None
-                for chunk in graph.stream(input_to_send, config, stream_mode="values"):
-                    # chunk is the full state after each node fires
-                    pass  # state updates are handled via interrupt
-
-                # Graph completed without interrupt
-                progress.stop()
-                break
-
-            except GraphInterrupt as exc:
-                progress.stop()
-                interrupt_value = exc.args[0] if exc.args else {}
-
-                # Handle list of interrupts (LangGraph wraps in a list)
-                if isinstance(interrupt_value, list) and interrupt_value:
-                    interrupt_value = interrupt_value[0].value if hasattr(interrupt_value[0], "value") else interrupt_value[0]
-
-                user_input = _handle_interrupt(
-                    interrupt_value if isinstance(interrupt_value, dict) else {"type": "unknown", "prompt": str(interrupt_value)}
-                )
-
-                # Show which node we're advancing past
-                node_hint = interrupt_value.get("type", "") if isinstance(interrupt_value, dict) else ""
-                with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console, transient=True) as p:
-                    p.add_task(f"[dim]Processing {node_hint}...[/]", total=None)
-                    input_to_send = Command(resume=user_input)
-                    progress = p
-                    progress.start()
-                    break  # restart outer loop
-
 
 def _run_graph_loop_v2(graph, initial_input: dict, config: dict) -> None:
-    """Cleaner HITL loop using invoke pattern for interrupt/resume."""
+    """HITL loop: invoke returns state with __interrupt__ in LangGraph 1.x."""
     input_to_send = initial_input
-    is_resuming = False
 
     while True:
-        try:
-            if is_resuming:
-                # Resume with Command(resume=...) — state is reconstructed from checkpoint
-                result = graph.invoke(input_to_send, config)
-            else:
-                result = graph.invoke(input_to_send, config)
-            # Graph finished
+        result = graph.invoke(input_to_send, config)
+
+        interrupts = result.get("__interrupt__")
+        if not interrupts:
             _print_completion(result)
             return
 
-        except GraphInterrupt as exc:
-            interrupt_value = exc.args[0] if exc.args else {}
+        # Unwrap the interrupt payload
+        raw = interrupts[0]
+        interrupt_value = raw.value if hasattr(raw, "value") else raw
 
-            # Unwrap if list
-            if isinstance(interrupt_value, (list, tuple)) and interrupt_value:
-                item = interrupt_value[0]
-                interrupt_value = item.value if hasattr(item, "value") else item
+        if not isinstance(interrupt_value, dict):
+            interrupt_value = {"type": "unknown", "content": str(interrupt_value)}
 
-            if not isinstance(interrupt_value, dict):
-                interrupt_value = {"type": "unknown", "content": str(interrupt_value)}
+        node_type = interrupt_value.get("type", "")
+        if node_type not in {"intake", "clarify", "ideate", "validate"}:
+            console.print(f"[dim]  Designing {node_type}...[/]")
 
-            node_type = interrupt_value.get("type", "")
-
-            # Show progress spinner for design nodes
-            if node_type not in {"intake", "clarify", "ideate", "validate"}:
-                console.print(f"[dim]  Designing {node_type}...[/]")
-
-            user_input = _handle_interrupt(interrupt_value)
-            input_to_send = Command(resume=user_input)
-            is_resuming = True
+        user_input = _handle_interrupt(interrupt_value)
+        input_to_send = Command(resume=user_input)
 
 
 def _print_completion(state: dict) -> None:
