@@ -47,15 +47,18 @@ def _build_app(bot_token: str):
         raw_text = event.get("text", "")
         text = _strip_mention(raw_text, _bot_user_id).strip()
 
+        logger.info("slack.mention  channel=%s  thread=%s  text=%r", channel, thread_ts, text[:120])
+
         store = _get_store()
         session = store.get(thread_ts)
 
         # ── Resume an existing active session ─────────────────────────────
         if session and session.status == "running":
-            # Another invocation is already in flight — drop silently.
+            logger.debug("slack.mention  thread=%s  dropped (already running)", thread_ts)
             return
 
         if session and session.status == "waiting":
+            logger.info("slack.mention  resuming session=%s", session.session_name)
             if not text:
                 await say(
                     text="_Session active — reply in this thread to continue._",
@@ -69,6 +72,7 @@ def _build_app(bot_token: str):
             return
 
         if session and session.status == "complete":
+            logger.info("slack.mention  thread=%s  session already complete", thread_ts)
             await say(
                 text="_This session is complete. Mention me in a new message to start a fresh one._",
                 thread_ts=thread_ts,
@@ -83,6 +87,8 @@ def _build_app(bot_token: str):
         session_name = slugify(text, max_length=40) if text else f"session-{session_id[:8]}"
         output_dir = str(cfg.output_dir / session_name)
         session_db_path = str(cfg.sessions_dir / f"{session_name}.db")
+
+        logger.info("slack.session  create  name=%s  id=%s  channel=%s", session_name, session_id, channel)
 
         session = store.create(thread_ts, channel, session_name, session_db_path, session_id)
         state = build_initial_state(text, session_name, session_id, output_dir)
@@ -111,11 +117,14 @@ def _build_app(bot_token: str):
         if session.status == "complete":
             return
         if session.status == "running":
-            return  # already processing
+            logger.debug("slack.message  thread=%s  dropped (already running)", thread_ts)
+            return
 
         user_input = event.get("text", "").strip()
         if not user_input:
             return
+
+        logger.info("slack.message  session=%-30s  text=%r", session.session_name, user_input[:120])
 
         store.set_status(thread_ts, "running")
         complete = await drive_graph(say, client, store, session, Command(resume=user_input))
@@ -143,8 +152,12 @@ def start() -> None:
     """Entry point: `uv run tc-slack` or `python -m theorycraft.slack.app`."""
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s  %(levelname)-5s  %(name)s  %(message)s",
+        datefmt="%H:%M:%S",
     )
+    # Quiet the noisy Slack / httpx internals — we only want theorycraft logs at INFO.
+    for noisy in ("slack_bolt", "slack_sdk", "httpx", "httpcore", "litellm"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     from theorycraft.config import get_settings
     cfg = get_settings()

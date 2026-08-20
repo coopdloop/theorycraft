@@ -31,6 +31,50 @@ def _invoke(session_db_path: str, thread_id: str, input_data) -> dict:
         )
 
 
+def _log_state(state: dict, session_name: str) -> None:
+    """Log a concise snapshot of meaningful state fields."""
+    parts: list[str] = []
+
+    if state.get("raw_idea"):
+        idea = state["raw_idea"][:60].replace("\n", " ")
+        parts.append(f"idea={idea!r}")
+
+    clarifications = state.get("clarifications", [])
+    if clarifications:
+        parts.append(f"clarifications={len(clarifications)}")
+
+    if state.get("concept_summary"):
+        parts.append(f"concept={'approved' if state.get('concept_approved') else 'draft'}")
+
+    for key, label in [
+        ("services_draft", "services"),
+        ("api_routes_draft", "api_routes"),
+        ("db_schema_draft", "db_schema"),
+        ("frontend_draft", "frontend"),
+        ("sdk_draft", "sdk"),
+        ("architecture_draft", "architecture"),
+    ]:
+        if state.get(key):
+            parts.append(f"{label}=✓")
+
+    if state.get("spec_approved"):
+        parts.append("spec=approved")
+    elif state.get("sections_to_revise"):
+        parts.append(f"revisions={len(state['sections_to_revise'])}")
+
+    if state.get("output_path"):
+        parts.append(f"output={state['output_path']}")
+
+    if state.get("github_output_url"):
+        parts.append(f"github={state['github_output_url']}")
+
+    errors = state.get("errors", [])
+    if errors:
+        parts.append(f"errors={len(errors)}")
+
+    logger.info("[%s] state  %s", session_name, "  ".join(parts) if parts else "(empty)")
+
+
 async def drive_graph(
     say,
     client,
@@ -47,7 +91,15 @@ async def drive_graph(
     """
     loop = asyncio.get_running_loop()
 
-    # Post a "thinking" indicator so the user knows we received their message.
+    # Log user input (Command resumes carry the user's text).
+    if hasattr(input_data, "resume"):
+        user_text = str(input_data.resume)[:200].replace("\n", " ")
+        logger.info("[%s] user → %r", session.session_name, user_text)
+    else:
+        logger.info("[%s] session start  thread=%s", session.session_name, session.thread_ts)
+
+    logger.info("[%s] graph.invoke → starting", session.session_name)
+
     thinking_msg = await say(
         text="thinking...",
         blocks=format_thinking(),
@@ -63,7 +115,7 @@ async def drive_graph(
             input_data,
         )
     except Exception as exc:
-        logger.exception("Graph invocation failed for session %s", session.session_name)
+        logger.exception("[%s] graph.invoke failed", session.session_name)
         text, blocks = format_error(f"Something went wrong: {exc}")
         await say(text=text, blocks=blocks, thread_ts=session.thread_ts)
         store.set_status(session.thread_ts, "waiting")
@@ -74,15 +126,15 @@ async def drive_graph(
         except Exception:
             pass
 
+    _log_state(result, session.session_name)
+
     interrupts = result.get("__interrupt__")
 
     if not interrupts:
-        # Graph ran to completion.
+        logger.info("[%s] session complete → output=%s", session.session_name, result.get("output_path", "none"))
         store.set_status(session.thread_ts, "complete")
         text, blocks = format_completion(result)
         await say(text=text, blocks=blocks, thread_ts=session.thread_ts)
-
-        # Optionally archive the spec to the theorycraft repo.
         await _maybe_archive(result, session)
         return True
 
@@ -92,8 +144,14 @@ async def drive_graph(
         interrupt_value = {"type": "unknown", "content": str(interrupt_value)}
 
     node_type = interrupt_value.get("type", "")
+    logger.info(
+        "[%s] interrupt  type=%-10s  round=%s",
+        session.session_name,
+        node_type,
+        interrupt_value.get("round", interrupt_value.get("revision_round", "-")),
+    )
+
     if node_type not in {"intake", "clarify", "ideate", "validate"}:
-        # Design node in progress — post a status update without changing flow.
         await say(
             text=f"Designing {node_type}…",
             blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f":gear: _Designing {node_type}…_"}]}],
