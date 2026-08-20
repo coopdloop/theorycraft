@@ -156,3 +156,4 @@ The default `claude-sonnet-4-6` works well for the full session. To use a differ
 THEORYCRAFT_MODEL=claude-opus-4-8 uv run theorycraft new "..."   # deeper reasoning
 THEORYCRAFT_MODEL=gpt-4o uv run theorycraft new "..."             # needs OPENAI_API_KEY
 ```
+# temp

@@ -22,6 +22,7 @@ dependencies = [
 
 [project.scripts]
 theorycraft = "theorycraft.cli:app"
+tc-commit = "theorycraft.commit:app"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

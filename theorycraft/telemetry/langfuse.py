@@ -103,11 +103,6 @@ def node_trace(node_name: str) -> Callable:
                         pass
                     return result
             except Exception as exc:
-                # If the observation context itself fails, run without telemetry
-                try:
-                    client.update_current_span(level="ERROR", status_message=str(exc))
-                except Exception:
-                    pass
                 raise
 
         return wrapper
