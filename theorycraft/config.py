@@ -27,9 +27,16 @@ class Settings(BaseSettings):
     github_app_private_key_path: Optional[str] = Field(default=None, alias="GITHUB_APP_PRIVATE_KEY_PATH")
     github_org: Optional[str] = Field(default=None, alias="GITHUB_ORG")
 
-    # Notifications
+    # Notifications (outbound webhook)
     slack_webhook_url: Optional[str] = Field(default=None, alias="SLACK_WEBHOOK_URL")
     generic_webhook_url: Optional[str] = Field(default=None, alias="GENERIC_WEBHOOK_URL")
+
+    # Slack bot (interactive — Socket Mode)
+    slack_bot_token: Optional[str] = Field(default=None, alias="SLACK_BOT_TOKEN")
+    slack_app_token: Optional[str] = Field(default=None, alias="SLACK_APP_TOKEN")
+
+    # GitHub repo to archive session specs into (e.g. "coopdloop/theorycraft")
+    theorycraft_archive_repo: Optional[str] = Field(default=None, alias="THEORYCRAFT_ARCHIVE_REPO")
 
     # Sessions
     sessions_dir: Path = Field(default=Path.home() / ".theorycraft" / "sessions", alias="THEORYCRAFT_SESSIONS_DIR")
@@ -61,6 +68,10 @@ class Settings(BaseSettings):
     @property
     def slack_enabled(self) -> bool:
         return bool(self.slack_webhook_url)
+
+    @property
+    def slack_bot_enabled(self) -> bool:
+        return bool(self.slack_bot_token and self.slack_app_token)
 
     @property
     def webhook_enabled(self) -> bool:

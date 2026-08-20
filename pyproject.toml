@@ -17,12 +17,14 @@ dependencies = [
     "pygithub>=2.3",
     "python-slugify>=8.0",
     "rich>=13.0",
+    "slack-bolt>=1.18",
     "typer>=0.12",
 ]
 
 [project.scripts]
 theorycraft = "theorycraft.cli:app"
 tc-commit = "theorycraft.commit:app"
+tc-slack = "theorycraft.slack.app:start"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

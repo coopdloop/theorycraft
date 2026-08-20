@@ -101,6 +101,29 @@ class GitHubClient:
         logger.info("Created PR: %s", pr.html_url)
         return pr.html_url
 
+    def commit_files(
+        self,
+        repo_full_name: str,
+        files: dict[str, str],
+        message: str,
+        branch: str | None = None,
+    ) -> str:
+        """Commit one or more files to an existing repo. Returns the commit SHA."""
+        gh = self._gh
+        repo = gh.get_repo(repo_full_name)
+        target_branch = branch or repo.default_branch
+
+        for path, content in files.items():
+            try:
+                existing = repo.get_contents(path, ref=target_branch)
+                repo.update_file(path, message, content, existing.sha, branch=target_branch)
+            except Exception:
+                repo.create_file(path, message, content, branch=target_branch)
+
+        head_sha = repo.get_branch(target_branch).commit.sha
+        logger.info("Committed %d file(s) to %s (%s)", len(files), repo_full_name, head_sha[:7])
+        return head_sha
+
     def create_gist(self, session_name: str, spec_content: str) -> str:
         """Create a public Gist with the spec."""
         from github import InputFileContent

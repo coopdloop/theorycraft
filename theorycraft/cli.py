@@ -370,5 +370,12 @@ def show(
     console.print(f"\n[dim]Source:[/] {spec_path}")
 
 
+@app.command()
+def slack() -> None:
+    """Start the Slack bot (Socket Mode). Requires SLACK_BOT_TOKEN and SLACK_APP_TOKEN."""
+    from theorycraft.slack.app import start
+    start()
+
+
 if __name__ == "__main__":
     app()
