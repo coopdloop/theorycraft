@@ -111,21 +111,34 @@ class GitHubClient:
         message: str,
         branch: str | None = None,
     ) -> str:
-        """Commit one or more files to an existing repo. Returns the commit SHA."""
+        """Atomically commit one or more files via the Git Data API. Returns the commit SHA."""
+        from github import InputGitTreeElement
+
         gh = self._gh
         repo = gh.get_repo(repo_full_name)
         target_branch = branch or repo.default_branch
 
-        for path, content in files.items():
-            try:
-                existing = repo.get_contents(path, ref=target_branch)
-                repo.update_file(path, message, content, existing.sha, branch=target_branch)
-            except Exception:
-                repo.create_file(path, message, content, branch=target_branch)
+        # Resolve current HEAD
+        head_ref = repo.get_git_ref(f"heads/{target_branch}")
+        head_sha = head_ref.object.sha
+        head_commit = repo.get_git_commit(head_sha)
 
-        head_sha = repo.get_branch(target_branch).commit.sha
-        logger.info("Committed %d file(s) to %s (%s)", len(files), repo_full_name, head_sha[:7])
-        return head_sha
+        # Create a blob per file, then build a flat tree on top of the current one
+        tree_elements = []
+        for path, content in files.items():
+            blob = repo.create_git_blob(content, "utf-8")
+            tree_elements.append(
+                InputGitTreeElement(path=path, mode="100644", type="blob", sha=blob.sha)
+            )
+
+        new_tree = repo.create_git_tree(tree_elements, base_tree=head_commit.tree)
+        new_commit = repo.create_git_commit(message=message, tree=new_tree, parents=[head_commit])
+
+        # Fast-forward the branch ref
+        head_ref.edit(new_commit.sha, force=False)
+
+        logger.info("Committed %d file(s) to %s (%s)", len(files), repo_full_name, new_commit.sha[:7])
+        return new_commit.sha
 
     def create_gist(self, session_name: str, spec_content: str) -> str:
         """Create a public Gist with the spec."""

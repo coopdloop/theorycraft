@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import signal
 import uuid
 
 from langgraph.types import Command
@@ -12,6 +13,17 @@ logger = logging.getLogger(__name__)
 # Resolved at startup after auth_test()
 _bot_user_id: str = ""
 _store = None
+
+# Limits how many graph invocations run concurrently across all sessions.
+_MAX_CONCURRENT_GRAPHS = 4
+_graph_sem: asyncio.Semaphore | None = None
+
+
+def _sem() -> asyncio.Semaphore:
+    global _graph_sem
+    if _graph_sem is None:
+        _graph_sem = asyncio.Semaphore(_MAX_CONCURRENT_GRAPHS)
+    return _graph_sem
 
 
 def _get_store():
@@ -66,7 +78,8 @@ def _build_app(bot_token: str):
                 )
                 return
             store.set_status(thread_ts, "running")
-            complete = await drive_graph(say, client, store, session, Command(resume=text))
+            async with _sem():
+                complete = await drive_graph(say, client, store, session, Command(resume=text))
             if not complete:
                 store.set_status(thread_ts, "waiting")
             return
@@ -96,7 +109,8 @@ def _build_app(bot_token: str):
         state = build_initial_state(text, session_name, session_id, output_dir)
 
         store.set_status(thread_ts, "running")
-        complete = await drive_graph(say, client, store, session, state)
+        async with _sem():
+            complete = await drive_graph(say, client, store, session, state)
         if not complete:
             store.set_status(thread_ts, "waiting")
 
@@ -129,7 +143,8 @@ def _build_app(bot_token: str):
         logger.info("slack.message  session=%-30s  text=%r", session.session_name, user_input[:120])
 
         store.set_status(thread_ts, "running")
-        complete = await drive_graph(say, client, store, session, Command(resume=user_input))
+        async with _sem():
+            complete = await drive_graph(say, client, store, session, Command(resume=user_input))
         if not complete:
             store.set_status(thread_ts, "waiting")
 
@@ -147,7 +162,26 @@ async def _run(bot_token: str, app_token: str) -> None:
     logger.info("Theorycraft Slack bot started as @%s (%s)", auth["user"], _bot_user_id)
 
     handler = AsyncSocketModeHandler(app, app_token)
-    await handler.start_async()
+
+    # Graceful shutdown on SIGTERM / SIGINT
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop_event.set)
+
+    start_task = asyncio.create_task(handler.start_async())
+    logger.info("Bot running — press Ctrl+C to stop gracefully.")
+
+    await stop_event.wait()
+
+    logger.info("Shutdown signal received — closing bot…")
+    await handler.close_async()
+    start_task.cancel()
+    try:
+        await start_task
+    except (asyncio.CancelledError, Exception):
+        pass
+    logger.info("Bot stopped.")
 
 
 def _setup_logging() -> None:

@@ -384,6 +384,53 @@ def show(
 
 
 @app.command()
+def delete(
+    session_name: Annotated[str, typer.Argument(help="Session name to delete")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt")] = False,
+    keep_output: Annotated[bool, typer.Option("--keep-output", help="Keep the output directory")] = False,
+) -> None:
+    """Delete a session checkpoint (and optionally its output directory)."""
+    import shutil
+    from theorycraft.config import get_settings
+    cfg = get_settings()
+
+    db_path = Path(_get_session_db(session_name))
+    if not db_path.exists():
+        console.print(f"[red]Session '{session_name}' not found.[/]")
+        raise typer.Exit(1)
+
+    output_path = cfg.output_dir / session_name
+
+    lines: list[str] = []
+    db_kb = db_path.stat().st_size / 1024
+    lines.append(f"[dim]checkpoint:[/] {db_path}  [dim]({db_kb:.1f} KB)[/]")
+
+    will_delete_output = not keep_output and output_path.exists()
+    if will_delete_output:
+        dir_kb = sum(f.stat().st_size for f in output_path.rglob("*") if f.is_file()) / 1024
+        lines.append(f"[dim]output dir:[/] {output_path}  [dim]({dir_kb:.1f} KB)[/]")
+
+    console.print(Panel(
+        "\n".join(lines),
+        title=f"[red]Delete '{session_name}'[/]",
+        border_style="red",
+    ))
+
+    if not yes:
+        confirmed = Prompt.ask("Delete?", choices=["y", "n"], default="n")
+        if confirmed != "y":
+            console.print("[dim]Cancelled.[/]")
+            return
+
+    db_path.unlink()
+    console.print(f"[green]✓[/] Deleted checkpoint: {db_path}")
+
+    if will_delete_output:
+        shutil.rmtree(output_path)
+        console.print(f"[green]✓[/] Deleted output: {output_path}")
+
+
+@app.command()
 def slack() -> None:
     """Start the Slack bot (Socket Mode). Requires SLACK_BOT_TOKEN and SLACK_APP_TOKEN."""
     from theorycraft.slack.app import start
