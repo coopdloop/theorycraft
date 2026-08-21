@@ -23,7 +23,6 @@ dependencies = [
 
 [project.scripts]
 theorycraft = "theorycraft.cli:app"
-tc-commit = "theorycraft.commit:app"
 tc-slack = "theorycraft.slack.app:start"
 
 [tool.pytest.ini_options]
