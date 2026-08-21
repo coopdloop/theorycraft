@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import threading
 
 from langgraph.types import Command
 
@@ -15,20 +15,49 @@ from theorycraft.slack.formatter import (
     format_thinking,
 )
 from theorycraft.slack.session_store import SlackSession, SlackSessionStore
+from theorycraft.utils import DESIGN_NODE_LABELS, DESIGN_NODES
 
 logger = logging.getLogger(__name__)
 
-# Each graph invocation is CPU+IO bound and synchronous — run in a thread pool.
-_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="tc-graph")
 
+def _stream_graph(
+    session_db_path: str,
+    thread_id: str,
+    input_data,
+    q: asyncio.Queue,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Synchronous graph stream running in a daemon thread.
 
-def _invoke(session_db_path: str, thread_id: str, input_data) -> dict:
-    """Synchronous graph.invoke — runs inside the thread pool."""
-    with GraphSession(session_db_path) as gs:
-        return gs.graph.invoke(
-            input_data,
-            {"configurable": {"thread_id": thread_id}},
-        )
+    Pushes ("node", node_name) events to the async queue as each node finishes,
+    then pushes ("done", final_state_dict) or ("error", exc) when complete.
+    """
+    try:
+        with GraphSession(session_db_path) as gs:
+            config = {"configurable": {"thread_id": thread_id}}
+            interrupt_seen = None
+
+            for chunk in gs.graph.stream(input_data, config, stream_mode="updates"):
+                if "__interrupt__" in chunk:
+                    interrupt_seen = chunk["__interrupt__"]
+                else:
+                    for node_name in chunk:
+                        loop.call_soon_threadsafe(q.put_nowait, ("node", node_name))
+
+            # Build final dict: full snapshot values + interrupt if present
+            snapshot = gs.graph.get_state(config)
+            final = dict(snapshot.values)
+            if interrupt_seen is not None:
+                final["__interrupt__"] = interrupt_seen
+            elif snapshot.tasks:
+                for task in snapshot.tasks:
+                    if getattr(task, "interrupts", None):
+                        final["__interrupt__"] = tuple(task.interrupts)
+                        break
+
+            loop.call_soon_threadsafe(q.put_nowait, ("done", final))
+    except Exception as exc:
+        loop.call_soon_threadsafe(q.put_nowait, ("error", exc))
 
 
 def _log_state(state: dict, session_name: str) -> None:
@@ -75,6 +104,14 @@ def _log_state(state: dict, session_name: str) -> None:
     logger.info("[%s] state  %s", session_name, "  ".join(parts) if parts else "(empty)")
 
 
+def _progress_blocks(completed: list[str]) -> list[dict]:
+    lines = ["*Generating spec…*"]
+    for node_name in completed:
+        label = DESIGN_NODE_LABELS.get(node_name, node_name)
+        lines.append(f":white_check_mark: {label}")
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}}]
+
+
 async def drive_graph(
     say,
     client,
@@ -82,14 +119,12 @@ async def drive_graph(
     session: SlackSession,
     input_data,
 ) -> bool:
-    """
-    Drive one graph step: invoke the graph, then post the interrupt or
-    completion back to the Slack thread.
+    """Drive one graph step with live design-node progress posted to the thread.
 
-    Returns True if the session is complete, False if it's waiting for
-    the next user reply.
+    Returns True if the session is complete, False if awaiting the next reply.
     """
     loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
 
     if hasattr(input_data, "resume"):
         user_text = str(input_data.resume)[:200].replace("\n", " ")
@@ -105,23 +140,73 @@ async def drive_graph(
         thread_ts=session.thread_ts,
     )
 
+    # Start graph stream in daemon thread
+    t = threading.Thread(
+        target=_stream_graph,
+        args=(session.session_db_path, session.thread_id, input_data, q, loop),
+        daemon=True,
+        name=f"tc-graph-{session.session_name}",
+    )
+    t.start()
+
+    # Delete thinking indicator right away so progress appears cleanly
     try:
-        result = await loop.run_in_executor(
-            _executor,
-            _invoke,
-            session.session_db_path,
-            session.thread_id,
-            input_data,
-        )
-    except Exception as exc:
-        logger.exception("[%s]  graph error", session.session_name)
-        text, blocks = format_error(f"Something went wrong: {exc}")
-        await say(text=text, blocks=blocks, thread_ts=session.thread_ts)
-        store.set_status(session.thread_ts, "waiting")
-        return False
-    finally:
+        await client.chat_delete(channel=session.channel, ts=thinking_msg["ts"])
+    except Exception:
+        pass
+
+    completed_design: list[str] = []
+    progress_msg_ts: str | None = None
+
+    while True:
+        event_type, data = await q.get()
+
+        if event_type == "node":
+            node_name: str = data
+            if node_name in DESIGN_NODES:
+                completed_design.append(node_name)
+                label = DESIGN_NODE_LABELS.get(node_name, node_name)
+                logger.info("[%s]  ✓ %s", session.session_name, label)
+
+                blocks = _progress_blocks(completed_design)
+                if progress_msg_ts is None:
+                    msg = await say(
+                        text="Generating spec…",
+                        blocks=blocks,
+                        thread_ts=session.thread_ts,
+                    )
+                    progress_msg_ts = msg["ts"]
+                else:
+                    try:
+                        await client.chat_update(
+                            channel=session.channel,
+                            ts=progress_msg_ts,
+                            text="Generating spec…",
+                            blocks=blocks,
+                        )
+                    except Exception:
+                        pass
+
+        elif event_type == "error":
+            logger.exception("[%s]  graph error: %s", session.session_name, data)
+            if progress_msg_ts:
+                try:
+                    await client.chat_delete(channel=session.channel, ts=progress_msg_ts)
+                except Exception:
+                    pass
+            text, blocks = format_error(f"Something went wrong: {data}")
+            await say(text=text, blocks=blocks, thread_ts=session.thread_ts)
+            store.set_status(session.thread_ts, "waiting")
+            return False
+
+        elif event_type == "done":
+            result = data
+            break
+
+    # Remove the progress message before posting the final result
+    if progress_msg_ts:
         try:
-            await client.chat_delete(channel=session.channel, ts=thinking_msg["ts"])
+            await client.chat_delete(channel=session.channel, ts=progress_msg_ts)
         except Exception:
             pass
 
@@ -137,7 +222,7 @@ async def drive_graph(
         await _maybe_archive(result, session)
         return True
 
-    raw = interrupts[0]
+    raw = interrupts[0] if isinstance(interrupts, (tuple, list)) else interrupts
     interrupt_value = raw.value if hasattr(raw, "value") else raw
     if not isinstance(interrupt_value, dict):
         interrupt_value = {"type": "unknown", "content": str(interrupt_value)}
@@ -145,13 +230,6 @@ async def drive_graph(
     node_type = interrupt_value.get("type", "")
     round_val = interrupt_value.get("round", interrupt_value.get("revision_round", "-"))
     logger.info("[%s]  interrupt  type=%-10s  round=%s", session.session_name, node_type, round_val)
-
-    if node_type not in {"intake", "clarify", "ideate", "validate"}:
-        await say(
-            text=f"Designing {node_type}…",
-            blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f":gear: _Designing {node_type}…_"}]}],
-            thread_ts=session.thread_ts,
-        )
 
     text, blocks = format_interrupt(interrupt_value)
     await say(text=text, blocks=blocks, thread_ts=session.thread_ts)
@@ -171,12 +249,13 @@ async def _maybe_archive(result: dict, session: SlackSession) -> None:
     try:
         from pathlib import Path
         from theorycraft.integrations.github import GitHubClient
-        client = GitHubClient(cfg)
-        content = Path(output_path).read_text()
+
         loop = asyncio.get_running_loop()
+        content = Path(output_path).read_text()
+        gh = GitHubClient(cfg)
         await loop.run_in_executor(
-            _executor,
-            lambda: client.commit_files(
+            None,
+            lambda: gh.commit_files(
                 cfg.theorycraft_archive_repo,
                 {f"sessions/{session.session_name}/product.json": content},
                 f"theorycraft: archive spec for {session.session_name}",

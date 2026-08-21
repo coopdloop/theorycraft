@@ -16,6 +16,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
+from theorycraft.utils import DESIGN_NODE_LABELS, DESIGN_NODES
+
 app = typer.Typer(
     name="theorycraft",
     help="Collaborative LangGraph agent that theory-crafts product ideas into product-as-code specs.",
@@ -140,19 +142,26 @@ def _handle_interrupt(interrupt_payload: dict) -> str:
 
 
 def _run_graph_loop_v2(graph, initial_input: dict, config: dict) -> None:
-    """HITL loop: invoke returns state with __interrupt__ in LangGraph 1.x."""
+    """HITL loop using graph.stream for real-time design node progress."""
     input_to_send = initial_input
 
     while True:
-        result = graph.invoke(input_to_send, config)
+        interrupt_payload = None
 
-        interrupts = result.get("__interrupt__")
-        if not interrupts:
-            _print_completion(result)
+        for chunk in graph.stream(input_to_send, config, stream_mode="updates"):
+            if "__interrupt__" in chunk:
+                interrupt_payload = chunk["__interrupt__"]
+            else:
+                for node_name in chunk:
+                    if node_name in DESIGN_NODES:
+                        label = DESIGN_NODE_LABELS.get(node_name, node_name)
+                        console.print(f"[dim]  ✓ {label}[/]")
+
+        if interrupt_payload is None:
+            _print_completion(dict(graph.get_state(config).values))
             return
 
-        # Unwrap the interrupt payload
-        raw = interrupts[0]
+        raw = interrupt_payload[0] if isinstance(interrupt_payload, (tuple, list)) else interrupt_payload
         interrupt_value = raw.value if hasattr(raw, "value") else raw
 
         if not isinstance(interrupt_value, dict):
@@ -205,12 +214,16 @@ def new(
     from theorycraft.graph.state import initial_state
     from theorycraft.mcp.loader import MCPLoader
     from theorycraft.telemetry.langfuse import flush
+    from theorycraft.utils import unique_session_name
 
     import uuid
 
     cfg = get_settings()
     session_id = str(uuid.uuid4())
-    session_name = name or (idea and _slugify(idea)) or f"session-{session_id[:8]}"
+    base_name = name or (idea and _slugify(idea)) or f"session-{session_id[:8]}"
+    session_name = unique_session_name(base_name, cfg.sessions_dir)
+    if session_name != base_name:
+        console.print(f"[dim]Session '{base_name}' already exists — using '{session_name}'[/]")
     output_dir = str(output or cfg.output_dir / session_name)
 
     _print_header(session_name, session_id)
