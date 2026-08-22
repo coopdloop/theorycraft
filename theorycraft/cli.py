@@ -141,6 +141,18 @@ def _handle_interrupt(interrupt_payload: dict) -> str:
 
 
 
+_PROCESSING_LABELS: dict[str, str] = {
+    "intake": "processing your idea",
+    "clarify": "generating questions",
+    "ideate": "crafting concept",
+    "revise": "revising spec",
+    "validate": "preparing review",
+    "spec_compile": "assembling spec",
+    "github_publish": "publishing to GitHub",
+    "notify": "sending notifications",
+}
+
+
 def _run_graph_loop_v2(graph, initial_input: dict, config: dict) -> None:
     """HITL loop using graph.stream for real-time design node progress."""
     input_to_send = initial_input
@@ -148,14 +160,18 @@ def _run_graph_loop_v2(graph, initial_input: dict, config: dict) -> None:
     while True:
         interrupt_payload = None
 
-        for chunk in graph.stream(input_to_send, config, stream_mode="updates"):
-            if "__interrupt__" in chunk:
-                interrupt_payload = chunk["__interrupt__"]
-            else:
-                for node_name in chunk:
-                    if node_name in DESIGN_NODES:
-                        label = DESIGN_NODE_LABELS.get(node_name, node_name)
-                        console.print(f"[dim]  ✓ {label}[/]")
+        with console.status("[cyan]thinking[/]", spinner="dots") as status:
+            for chunk in graph.stream(input_to_send, config, stream_mode="updates"):
+                if "__interrupt__" in chunk:
+                    interrupt_payload = chunk["__interrupt__"]
+                else:
+                    for node_name in chunk:
+                        if node_name in DESIGN_NODES:
+                            label = DESIGN_NODE_LABELS.get(node_name, node_name)
+                            console.print(f"[dim]  ✓ {label}[/]")
+                            status.update(f"[cyan]thinking[/]")
+                        elif node_name in _PROCESSING_LABELS:
+                            status.update(f"[dim]{_PROCESSING_LABELS[node_name]}…[/]")
 
         if interrupt_payload is None:
             _print_completion(dict(graph.get_state(config).values))
@@ -166,10 +182,6 @@ def _run_graph_loop_v2(graph, initial_input: dict, config: dict) -> None:
 
         if not isinstance(interrupt_value, dict):
             interrupt_value = {"type": "unknown", "content": str(interrupt_value)}
-
-        node_type = interrupt_value.get("type", "")
-        if node_type not in {"intake", "clarify", "ideate", "validate"}:
-            console.print(f"[dim]  Designing {node_type}...[/]")
 
         user_input = _handle_interrupt(interrupt_value)
         input_to_send = Command(resume=user_input)

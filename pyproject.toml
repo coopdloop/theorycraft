@@ -25,6 +25,9 @@ dependencies = [
 theorycraft = "theorycraft.cli:app"
 tc-slack = "theorycraft.slack.app:start"
 
+[tool.setuptools.packages.find]
+include = ["theorycraft*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
