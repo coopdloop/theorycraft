@@ -16,6 +16,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
+from theorycraft.creatures import animate_hatch, render_egg_panel, select_creature
+from theorycraft.llm.router import get_total_tokens, reset_tokens
 from theorycraft.utils import DESIGN_NODE_LABELS, DESIGN_NODES
 
 app = typer.Typer(
@@ -119,10 +121,18 @@ def _handle_interrupt(interrupt_payload: dict) -> str:
             title=f"[green]theorycraft[/] [dim](round {interrupt_payload.get('round', 1)})[/]",
             border_style="green",
         ))
-        return _multiline_prompt(
-            "[bold green]>[/]",
-            hint="Type /ready when happy, or share feedback (blank line to submit).",
-        )
+        console.print("[dim]Type [bold]/ready[/] to proceed, or share feedback (blank line to submit).[/]")
+        _READY = {"/ready", "ready", "/go", "go"}
+        lines: list[str] = []
+        while True:
+            line = Prompt.ask("[bold green]>[/]")
+            if line.strip().lower() in _READY:
+                return line.strip()
+            if line == "" and lines:
+                break
+            if line:
+                lines.append(line)
+        return "\n".join(lines)
 
     elif interrupt_type == "validate":
         console.print()
@@ -141,6 +151,30 @@ def _handle_interrupt(interrupt_payload: dict) -> str:
 
 
 
+class _Progress:
+    def __init__(self, max_clarify_rounds: int) -> None:
+        # intake + clarify rounds + ideate(est 1) + 7 design nodes + validate + spec_compile
+        self.total = 1 + max_clarify_rounds + 1 + 7 + 1 + 1
+        self.completed = 0
+
+    def advance(self) -> None:
+        self.completed = min(self.completed + 1, self.total)
+
+    def render(self, model: str) -> str:
+        width = 18
+        filled = int(width * self.completed / max(self.total, 1))
+        bar = "█" * filled + "░" * (width - filled)
+        tokens = get_total_tokens()
+        tok_str = f"{tokens:,} tok" if tokens < 10_000 else f"{tokens / 1000:.1f}k tok"
+        pct = f"{self.completed}/{self.total}"
+        return f"[dim][{bar}] {pct}  ·  {tok_str}  ·  {model}[/]"
+
+
+def _print_footer(progress: _Progress, model: str) -> None:
+    console.print(f"  {progress.render(model)}")
+    console.print()
+
+
 _PROCESSING_LABELS: dict[str, str] = {
     "intake": "processing your idea",
     "clarify": "generating questions",
@@ -153,9 +187,16 @@ _PROCESSING_LABELS: dict[str, str] = {
 }
 
 
-def _run_graph_loop_v2(graph, initial_input: dict, config: dict) -> None:
+def _run_graph_loop_v2(
+    graph,
+    initial_input: dict,
+    config: dict,
+    progress: _Progress,
+    model: str,
+) -> None:
     """HITL loop using graph.stream for real-time design node progress."""
     input_to_send = initial_input
+    creature_revealed = False
 
     while True:
         interrupt_payload = None
@@ -170,6 +211,7 @@ def _run_graph_loop_v2(graph, initial_input: dict, config: dict) -> None:
                             label = DESIGN_NODE_LABELS.get(node_name, node_name)
                             console.print(f"[dim]  ✓ {label}[/]")
                             status.update(f"[cyan]thinking[/]")
+                            progress.advance()
                         elif node_name in _PROCESSING_LABELS:
                             status.update(f"[dim]{_PROCESSING_LABELS[node_name]}…[/]")
 
@@ -184,6 +226,20 @@ def _run_graph_loop_v2(graph, initial_input: dict, config: dict) -> None:
             interrupt_value = {"type": "unknown", "content": str(interrupt_value)}
 
         user_input = _handle_interrupt(interrupt_value)
+
+        itype = interrupt_value.get("type", "")
+        if itype in {"intake", "clarify", "validate"}:
+            progress.advance()
+        elif itype == "ideate" and user_input.strip().lower() in {"/ready", "ready", "/go", "go"}:
+            state_vals = dict(graph.get_state(config).values)
+            raw_idea = state_vals.get("raw_idea", "")
+            clarifications = state_vals.get("clarifications", [])
+            creature = select_creature(raw_idea, clarifications)
+            animate_hatch(console, creature)
+            creature_revealed = True
+            progress.advance()
+
+        _print_footer(progress, model)
         input_to_send = Command(resume=user_input)
 
 
@@ -231,6 +287,7 @@ def new(
     import uuid
 
     cfg = get_settings()
+    reset_tokens()
     session_id = str(uuid.uuid4())
     base_name = name or (idea and _slugify(idea)) or f"session-{session_id[:8]}"
     session_name = unique_session_name(base_name, cfg.sessions_dir)
@@ -239,6 +296,7 @@ def new(
     output_dir = str(output or cfg.output_dir / session_name)
 
     _print_header(session_name, session_id)
+    render_egg_panel(console)
 
     state = initial_state(
         session_id=session_id,
@@ -262,7 +320,8 @@ def new(
 
         try:
             with GraphSession(db_path) as session:
-                _run_graph_loop_v2(session.graph, state, config)
+                progress = _Progress(max_clarify_rounds=cfg.max_clarify_rounds)
+                _run_graph_loop_v2(session.graph, state, config, progress, cfg.model)
         finally:
             flush()
 
@@ -272,6 +331,7 @@ def resume(
     session_name: Annotated[str, typer.Argument(help="Session name to resume")],
 ) -> None:
     """Resume an interrupted theorycraft session."""
+    from theorycraft.config import get_settings
     from theorycraft.graph.builder import GraphSession
     from theorycraft.telemetry.langfuse import flush
 
@@ -285,10 +345,11 @@ def resume(
 
     console.print(f"[dim]Resuming session:[/] [yellow]{session_name}[/]")
 
+    cfg = get_settings()
     try:
         with GraphSession(db_path) as session:
-            # Resume with no new input — the graph will re-raise the pending interrupt
-            _run_graph_loop_v2(session.graph, Command(resume=""), config)
+            progress = _Progress(max_clarify_rounds=2)
+            _run_graph_loop_v2(session.graph, Command(resume=""), config, progress, cfg.model)
     finally:
         flush()
 

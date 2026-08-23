@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Optional, Type, TypeVar
 
 import instructor
@@ -14,16 +15,50 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _instructor_client: Optional[Any] = None
+_callbacks_registered: bool = False
 
 # Drop params the model doesn't support (e.g. temperature on newer Claude models)
 # rather than raising UnsupportedParamsError.
 litellm.drop_params = True
 
+# ── Token tracking ────────────────────────────────────────────────────────
+
+_token_lock = threading.Lock()
+_total_tokens: int = 0
+
+
+def add_tokens(n: int) -> None:
+    global _total_tokens
+    with _token_lock:
+        _total_tokens += n
+
+
+def get_total_tokens() -> int:
+    with _token_lock:
+        return _total_tokens
+
+
+def reset_tokens() -> None:
+    global _total_tokens
+    with _token_lock:
+        _total_tokens = 0
+
+
+def _track_tokens(kwargs: Any, completion_response: Any, start_time: Any, end_time: Any) -> None:
+    usage = getattr(completion_response, "usage", None)
+    if usage:
+        n = getattr(usage, "total_tokens", 0) or 0
+        if n:
+            add_tokens(n)
+
 
 def _get_instructor() -> Any:
-    global _instructor_client
+    global _instructor_client, _callbacks_registered
     if _instructor_client is None:
         setup_litellm_callback()
+        if not _callbacks_registered:
+            litellm.success_callback = list(litellm.success_callback) + [_track_tokens]
+            _callbacks_registered = True
         _instructor_client = instructor.from_litellm(litellm.completion)
     return _instructor_client
 
