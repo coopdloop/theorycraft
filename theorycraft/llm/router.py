@@ -15,13 +15,11 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _instructor_client: Optional[Any] = None
-_callbacks_registered: bool = False
 
 # Drop params the model doesn't support (e.g. temperature on newer Claude models)
-# rather than raising UnsupportedParamsError.
 litellm.drop_params = True
 
-# ── Token tracking ────────────────────────────────────────────────────────
+# ── Token tracking ────────────────────────────────────────────────────────────
 
 _token_lock = threading.Lock()
 _total_tokens: int = 0
@@ -30,7 +28,7 @@ _total_tokens: int = 0
 def add_tokens(n: int) -> None:
     global _total_tokens
     with _token_lock:
-        _total_tokens += n
+        _total_tokens = max(0, _total_tokens + n)
 
 
 def get_total_tokens() -> int:
@@ -44,21 +42,12 @@ def reset_tokens() -> None:
         _total_tokens = 0
 
 
-def _track_tokens(kwargs: Any, completion_response: Any, start_time: Any, end_time: Any) -> None:
-    usage = getattr(completion_response, "usage", None)
-    if usage:
-        n = getattr(usage, "total_tokens", 0) or 0
-        if n:
-            add_tokens(n)
-
+# ── LLM client ───────────────────────────────────────────────────────────────
 
 def _get_instructor() -> Any:
-    global _instructor_client, _callbacks_registered
+    global _instructor_client
     if _instructor_client is None:
         setup_litellm_callback()
-        if not _callbacks_registered:
-            litellm.success_callback = list(litellm.success_callback) + [_track_tokens]
-            _callbacks_registered = True
         _instructor_client = instructor.from_litellm(litellm.completion)
     return _instructor_client
 
@@ -80,6 +69,8 @@ def _log_response(content: str, usage: Any) -> None:
     logger.info("%-10s  %d chars  %s  %r", "←", len(content), tok, preview)
 
 
+# ── Call functions ────────────────────────────────────────────────────────────
+
 def structured_call(
     response_model: Type[T],
     messages: list[dict],
@@ -89,11 +80,12 @@ def structured_call(
     temperature: float = 0.2,
     **kwargs: Any,
 ) -> T:
-    """Call LiteLLM with instructor structured output. Deterministic nodes use this."""
+    """Instructor structured output. Uses create_with_completion to capture usage."""
     client = _get_instructor()
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "structured")
-    result = client.chat.completions.create(
+
+    result, completion = client.chat.completions.create_with_completion(
         model=target_model,
         messages=messages,
         response_model=response_model,
@@ -101,6 +93,13 @@ def structured_call(
         temperature=temperature,
         **kwargs,
     )
+
+    usage = getattr(completion, "usage", None)
+    if usage:
+        tokens = getattr(usage, "total_tokens", 0) or 0
+        if tokens:
+            add_tokens(tokens)
+
     logger.info("llm.response  structured=%s", type(result).__name__)
     return result
 
@@ -112,7 +111,7 @@ def stream_call(
     temperature: float = 0.7,
     **kwargs: Any,
 ) -> Any:
-    """Call LiteLLM with streaming. Creative nodes use this."""
+    """Raw streaming generator. Callers consume the stream directly."""
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "stream")
     return litellm.completion(
@@ -131,15 +130,45 @@ def simple_call(
     temperature: float = 0.5,
     **kwargs: Any,
 ) -> str:
-    """Non-streaming call returning just the text content."""
+    """Stream internally, drip token estimates per-chunk, correct on completion."""
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "simple")
-    resp = litellm.completion(
+
+    stream = litellm.completion(
         model=target_model,
         messages=messages,
         temperature=temperature,
+        stream=True,
         **kwargs,
     )
-    content = resp.choices[0].message.content or ""
-    _log_response(content, getattr(resp, "usage", None))
+
+    parts: list[str] = []
+    estimated: int = 0
+    final_usage: Any = None
+
+    for chunk in stream:
+        delta = (
+            chunk.choices[0].delta.content
+            if chunk.choices and chunk.choices[0].delta.content
+            else None
+        )
+        if delta:
+            parts.append(delta)
+            est = max(1, len(delta) // 4)
+            estimated += est
+            add_tokens(est)
+
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage and getattr(chunk_usage, "total_tokens", 0):
+            final_usage = chunk_usage
+
+    content = "".join(parts)
+
+    # Correct the running estimate with the real total (adds input tokens + fixes drift)
+    if final_usage:
+        real = getattr(final_usage, "total_tokens", 0) or 0
+        if real > 0:
+            add_tokens(real - estimated)
+
+    _log_response(content, final_usage)
     return content

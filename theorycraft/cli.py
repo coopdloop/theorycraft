@@ -235,7 +235,7 @@ def _run_graph_loop_v2(
     hud = _HUDState(progress=progress, model=model)
     input_to_send = initial_input
 
-    with Live(_make_hud(hud), console=console, refresh_per_second=4, vertical_overflow="visible") as live:
+    with Live(_make_hud(hud), console=console, refresh_per_second=8, vertical_overflow="visible") as live:
         while True:
             interrupt_payload = None
             hud.spinning = True
