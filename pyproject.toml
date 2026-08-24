@@ -17,6 +17,7 @@ dependencies = [
     "pygithub>=2.3",
     "python-slugify>=8.0",
     "rich>=13.0",
+    "textual>=0.50",
     "slack-bolt>=1.18",
     "typer>=0.12",
 ]

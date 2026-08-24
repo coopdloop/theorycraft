@@ -334,6 +334,7 @@ def new(
     output: Annotated[Optional[Path], typer.Option("--output", "-o", help="Output directory")] = None,
     github: Annotated[Optional[str], typer.Option("--github", help="GitHub publish mode: repo|pr|gist")] = None,
     github_repo: Annotated[Optional[str], typer.Option("--github-repo", help="Existing repo for PR mode (org/repo)")] = None,
+    no_tui: Annotated[bool, typer.Option("--no-tui", help="Use the plain Rich CLI instead of the Textual TUI")] = False,
 ) -> None:
     """Start a new theorycraft session and generate a product spec."""
     from theorycraft.config import get_settings
@@ -354,8 +355,6 @@ def new(
         console.print(f"[dim]Session '{base_name}' already exists — using '{session_name}'[/]")
     output_dir = str(output or cfg.output_dir / session_name)
 
-    _print_header(session_name, session_id)
-
     state = initial_state(
         session_id=session_id,
         session_name=session_name,
@@ -373,13 +372,26 @@ def new(
     db_path = _get_session_db(session_name)
 
     with MCPLoader() as mcp:
-        if mcp.running_servers:
-            console.print(f"[dim]MCP servers: {', '.join(mcp.running_servers)}[/]")
-
         try:
             with GraphSession(db_path) as session:
-                progress = _Progress(max_clarify_rounds=cfg.max_clarify_rounds)
-                _run_graph_loop_v2(session.graph, state, config, progress, cfg.model)
+                if no_tui:
+                    _print_header(session_name, session_id)
+                    if mcp.running_servers:
+                        console.print(f"[dim]MCP servers: {', '.join(mcp.running_servers)}[/]")
+                    progress = _Progress(max_clarify_rounds=cfg.max_clarify_rounds)
+                    _run_graph_loop_v2(session.graph, state, config, progress, cfg.model)
+                else:
+                    from theorycraft.tui import TheoryCraftApp
+                    tui = TheoryCraftApp(
+                        graph=session.graph,
+                        initial_input=state,
+                        config=config,
+                        session_name=session_name,
+                        model=cfg.model,
+                        max_clarify_rounds=cfg.max_clarify_rounds,
+                        lf_enabled=cfg.langfuse_enabled,
+                    )
+                    tui.run()
         finally:
             flush()
 
@@ -387,6 +399,7 @@ def new(
 @app.command()
 def resume(
     session_name: Annotated[str, typer.Argument(help="Session name to resume")],
+    no_tui: Annotated[bool, typer.Option("--no-tui", help="Use the plain Rich CLI")] = False,
 ) -> None:
     """Resume an interrupted theorycraft session."""
     from theorycraft.config import get_settings
@@ -398,16 +411,28 @@ def resume(
         console.print(f"[red]Session '{session_name}' not found.[/]")
         raise typer.Exit(1)
 
-    # Reconstruct session_id from db (use session_name as thread_id fallback)
     config = {"configurable": {"thread_id": session_name}}
-
-    console.print(f"[dim]Resuming session:[/] [yellow]{session_name}[/]")
-
     cfg = get_settings()
+    reset_tokens()
+
     try:
         with GraphSession(db_path) as session:
-            progress = _Progress(max_clarify_rounds=2)
-            _run_graph_loop_v2(session.graph, Command(resume=""), config, progress, cfg.model)
+            if no_tui:
+                console.print(f"[dim]Resuming session:[/] [yellow]{session_name}[/]")
+                progress = _Progress(max_clarify_rounds=2)
+                _run_graph_loop_v2(session.graph, Command(resume=""), config, progress, cfg.model)
+            else:
+                from theorycraft.tui import TheoryCraftApp
+                tui = TheoryCraftApp(
+                    graph=session.graph,
+                    initial_input=Command(resume=""),
+                    config=config,
+                    session_name=session_name,
+                    model=cfg.model,
+                    max_clarify_rounds=2,
+                    lf_enabled=cfg.langfuse_enabled,
+                )
+                tui.run()
     finally:
         flush()
 
