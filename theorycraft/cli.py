@@ -2,21 +2,24 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 from langgraph.types import Command
 from rich import print as rprint
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from theorycraft.creatures import animate_hatch, render_egg_panel, select_creature
+from theorycraft.creatures import EGG_FRAMES, RARITY_COLOR, select_creature
 from theorycraft.llm.router import get_total_tokens, reset_tokens
 from theorycraft.utils import DESIGN_NODE_LABELS, DESIGN_NODES
 
@@ -160,19 +163,50 @@ class _Progress:
     def advance(self) -> None:
         self.completed = min(self.completed + 1, self.total)
 
-    def render(self, model: str) -> str:
-        width = 18
-        filled = int(width * self.completed / max(self.total, 1))
-        bar = "█" * filled + "░" * (width - filled)
-        tokens = get_total_tokens()
-        tok_str = f"{tokens:,} tok" if tokens < 10_000 else f"{tokens / 1000:.1f}k tok"
-        pct = f"{self.completed}/{self.total}"
-        return f"[dim][{bar}] {pct}  ·  {tok_str}  ·  {model}[/]"
+
+class _HUDState:
+    def __init__(self, progress: _Progress, model: str) -> None:
+        self.progress = progress
+        self.model = model
+        self.creature: Any = None
+        self.egg_frame: int = 0
+        self.status: str = "starting…"
+        self.spinning: bool = True
 
 
-def _print_footer(progress: _Progress, model: str) -> None:
-    console.print(f"  {progress.render(model)}")
-    console.print()
+def _make_hud(hud: _HUDState) -> Panel:
+    if hud.creature:
+        art = hud.creature.ascii_art
+        color = RARITY_COLOR.get(hud.creature.rarity, "white")
+        title = f"[bold {color}]{hud.creature.rarity}[/]  ✨  [bold]{hud.creature.name}[/]"
+    else:
+        art = EGG_FRAMES[hud.egg_frame]
+        color = "dim"
+        title = "[dim]egg[/]"
+
+    bar_width = 16
+    filled = int(bar_width * hud.progress.completed / max(hud.progress.total, 1))
+    bar = "█" * filled + "░" * (bar_width - filled)
+    tokens = get_total_tokens()
+    tok_str = f"{tokens:,} tok" if tokens < 10_000 else f"{tokens / 1000:.1f}k tok"
+
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(width=18, no_wrap=True)
+    grid.add_column()
+    grid.add_row(
+        Text(art),
+        Text.from_markup(
+            f"[white][{bar}][/] [dim]{hud.progress.completed}/{hud.progress.total}[/]\n"
+            f"[dim]{tok_str}  ·  {hud.model}[/]"
+        ),
+    )
+
+    if hud.spinning:
+        status_widget: Any = Spinner("dots", text=f" {hud.status}", style="cyan")
+    else:
+        status_widget = Text(f"  {hud.status}", style="dim")
+
+    return Panel(Group(grid, status_widget), title=title, border_style=color)
 
 
 _PROCESSING_LABELS: dict[str, str] = {
@@ -187,6 +221,9 @@ _PROCESSING_LABELS: dict[str, str] = {
 }
 
 
+_READY = {"/ready", "ready", "/go", "go"}
+
+
 def _run_graph_loop_v2(
     graph,
     initial_input: dict,
@@ -194,14 +231,17 @@ def _run_graph_loop_v2(
     progress: _Progress,
     model: str,
 ) -> None:
-    """HITL loop using graph.stream for real-time design node progress."""
+    """HITL loop with a persistent Live HUD pinned at the bottom of the terminal."""
+    hud = _HUDState(progress=progress, model=model)
     input_to_send = initial_input
-    creature_revealed = False
 
-    while True:
-        interrupt_payload = None
+    with Live(_make_hud(hud), console=console, refresh_per_second=4, vertical_overflow="visible") as live:
+        while True:
+            interrupt_payload = None
+            hud.spinning = True
+            hud.status = "thinking…"
+            live.update(_make_hud(hud))
 
-        with console.status("[cyan]thinking[/]", spinner="dots") as status:
             for chunk in graph.stream(input_to_send, config, stream_mode="updates"):
                 if "__interrupt__" in chunk:
                     interrupt_payload = chunk["__interrupt__"]
@@ -210,37 +250,56 @@ def _run_graph_loop_v2(
                         if node_name in DESIGN_NODES:
                             label = DESIGN_NODE_LABELS.get(node_name, node_name)
                             console.print(f"[dim]  ✓ {label}[/]")
-                            status.update(f"[cyan]thinking[/]")
                             progress.advance()
+                            hud.status = f"✓ {label}"
                         elif node_name in _PROCESSING_LABELS:
-                            status.update(f"[dim]{_PROCESSING_LABELS[node_name]}…[/]")
+                            hud.status = _PROCESSING_LABELS[node_name] + "…"
+                    live.update(_make_hud(hud))
 
-        if interrupt_payload is None:
-            _print_completion(dict(graph.get_state(config).values))
-            return
+            if interrupt_payload is None:
+                live.stop()
+                _print_completion(dict(graph.get_state(config).values))
+                return
 
-        raw = interrupt_payload[0] if isinstance(interrupt_payload, (tuple, list)) else interrupt_payload
-        interrupt_value = raw.value if hasattr(raw, "value") else raw
+            raw = interrupt_payload[0] if isinstance(interrupt_payload, (tuple, list)) else interrupt_payload
+            interrupt_value = raw.value if hasattr(raw, "value") else raw
+            if not isinstance(interrupt_value, dict):
+                interrupt_value = {"type": "unknown", "content": str(interrupt_value)}
 
-        if not isinstance(interrupt_value, dict):
-            interrupt_value = {"type": "unknown", "content": str(interrupt_value)}
+            itype = interrupt_value.get("type", "")
+            hud.spinning = False
+            hud.status = "awaiting input…"
+            live.update(_make_hud(hud))
+            live.stop()
 
-        user_input = _handle_interrupt(interrupt_value)
+            user_input = _handle_interrupt(interrupt_value)
 
-        itype = interrupt_value.get("type", "")
-        if itype in {"intake", "clarify", "validate"}:
-            progress.advance()
-        elif itype == "ideate" and user_input.strip().lower() in {"/ready", "ready", "/go", "go"}:
-            state_vals = dict(graph.get_state(config).values)
-            raw_idea = state_vals.get("raw_idea", "")
-            clarifications = state_vals.get("clarifications", [])
-            creature = select_creature(raw_idea, clarifications)
-            animate_hatch(console, creature)
-            creature_revealed = True
-            progress.advance()
+            if itype == "ideate" and user_input.strip().lower() in _READY:
+                state_vals = dict(graph.get_state(config).values)
+                new_creature = select_creature(
+                    state_vals.get("raw_idea", ""),
+                    state_vals.get("clarifications", []),
+                )
+                # Animate egg cracking through all frames before revealing
+                with Live(console=console, refresh_per_second=6, vertical_overflow="visible") as anim:
+                    for frame_idx in range(len(EGG_FRAMES)):
+                        hud.egg_frame = frame_idx
+                        hud.creature = None
+                        hud.status = "hatching…"
+                        hud.spinning = False
+                        anim.update(_make_hud(hud))
+                        time.sleep(0.45)
+                hud.creature = new_creature
+                progress.advance()
+            elif itype in {"intake", "clarify", "validate"}:
+                progress.advance()
 
-        _print_footer(progress, model)
-        input_to_send = Command(resume=user_input)
+            hud.spinning = True
+            hud.status = "thinking…"
+            live.start(refresh=True)
+            live.update(_make_hud(hud))
+
+            input_to_send = Command(resume=user_input)
 
 
 def _print_completion(state: dict) -> None:
@@ -296,7 +355,6 @@ def new(
     output_dir = str(output or cfg.output_dir / session_name)
 
     _print_header(session_name, session_id)
-    render_egg_panel(console)
 
     state = initial_state(
         session_id=session_id,
