@@ -70,17 +70,20 @@ class HUDWidget(Static):
     def on_mount(self) -> None:
         self.set_interval(1 / 8, self._tick)
 
+    def render(self) -> Panel:  # Textual calls this; Rich Panel is valid here
+        return self._build_panel()
+
     def _tick(self) -> None:
         if self._spinning:
             self._spin_idx = (self._spin_idx + 1) % len(self._SPIN)
-        self.update(self._render())
+        self.refresh()
 
     def update_hud(self, **kwargs: Any) -> None:
         for k, v in kwargs.items():
             setattr(self, f"_{k}", v)
-        self.update(self._render())
+        self.refresh()
 
-    def _render(self) -> Panel:
+    def _build_panel(self) -> Panel:
         if self._creature:
             art = self._creature.ascii_art
             color = RARITY_COLOR.get(self._creature.rarity, "white")
