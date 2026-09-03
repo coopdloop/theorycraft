@@ -73,6 +73,45 @@ def _with_retries(fn: Callable[[], T], *, kind: str) -> T:
             )
             time.sleep(delay)
 
+
+def _stream_with_retries(stream_factory: Callable[[], Any], *, kind: str) -> Any:
+    """Wrap a streaming generator factory with retry logic.
+    
+    Returns a generator that retries on first-chunk failures.
+    Mid-stream failures after the first chunk are not retried (partial data already yielded).
+    """
+    attempt = 0
+    while True:
+        try:
+            stream = stream_factory()
+            # Force the first chunk to fail fast if rate-limited
+            first_chunk = None
+            for chunk in stream:
+                if first_chunk is None:
+                    first_chunk = chunk
+                    yield chunk
+                else:
+                    yield chunk
+            return
+        except _RETRYABLE_EXCEPTIONS as exc:
+            if first_chunk is not None:
+                # Mid-stream failure after yielding data — don't retry, re-raise
+                logger.error("%s stream failed mid-flight: %s", kind, exc)
+                raise
+            attempt += 1
+            if attempt >= _MAX_ATTEMPTS:
+                logger.error("%s stream failed after %d attempts: %s", kind, attempt, exc)
+                raise
+            hinted = _retry_after_seconds(exc)
+            backoff = min(_MAX_DELAY, _BASE_DELAY * (2 ** (attempt - 1)))
+            delay = hinted if hinted is not None else backoff
+            delay += random.uniform(0, min(1.0, delay))
+            logger.warning(
+                "%s stream hit %s (attempt %d/%d); retrying in %.1fs",
+                kind, type(exc).__name__, attempt, _MAX_ATTEMPTS, delay,
+            )
+            time.sleep(delay)
+
 # ── Token tracking ────────────────────────────────────────────────────────────
 
 _token_lock = threading.Lock()
@@ -171,7 +210,7 @@ def stream_call(
     """Raw streaming generator. Callers consume the stream directly."""
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "stream")
-    return _with_retries(
+    return _stream_with_retries(
         lambda: litellm.completion(
             model=target_model,
             messages=messages,
@@ -194,7 +233,7 @@ def simple_call(
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "simple")
 
-    stream = _with_retries(
+    stream = _stream_with_retries(
         lambda: litellm.completion(
             model=target_model,
             messages=messages,
