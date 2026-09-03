@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
-from typing import Any, Optional, Type, TypeVar
+import time
+from typing import Any, Callable, Optional, Type, TypeVar
 
 import instructor
 import litellm
@@ -18,6 +20,58 @@ _instructor_client: Optional[Any] = None
 
 # Drop params the model doesn't support (e.g. temperature on newer Claude models)
 litellm.drop_params = True
+
+# ── Retry / backoff ────────────────────────────────────────────────────────────
+
+# Transient errors worth retrying with exponential backoff.
+_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
+    litellm.RateLimitError,
+    litellm.APIConnectionError,
+    litellm.ServiceUnavailableError,
+    litellm.InternalServerError,
+    litellm.Timeout,
+)
+
+_MAX_ATTEMPTS = 6
+_BASE_DELAY = 1.0
+_MAX_DELAY = 60.0
+
+
+def _retry_after_seconds(exc: Exception) -> Optional[float]:
+    """Extract a Retry-After hint from the provider response, if present."""
+    headers = getattr(exc, "response", None)
+    headers = getattr(headers, "headers", None) or getattr(exc, "headers", None)
+    if not headers:
+        return None
+    value = headers.get("retry-after") or headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _with_retries(fn: Callable[[], T], *, kind: str) -> T:
+    """Run fn with exponential backoff + jitter on transient LLM errors."""
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except _RETRYABLE_EXCEPTIONS as exc:
+            attempt += 1
+            if attempt >= _MAX_ATTEMPTS:
+                logger.error("%s call failed after %d attempts: %s", kind, attempt, exc)
+                raise
+            hinted = _retry_after_seconds(exc)
+            backoff = min(_MAX_DELAY, _BASE_DELAY * (2 ** (attempt - 1)))
+            delay = hinted if hinted is not None else backoff
+            delay += random.uniform(0, min(1.0, delay))
+            logger.warning(
+                "%s call hit %s (attempt %d/%d); retrying in %.1fs",
+                kind, type(exc).__name__, attempt, _MAX_ATTEMPTS, delay,
+            )
+            time.sleep(delay)
 
 # ── Token tracking ────────────────────────────────────────────────────────────
 
@@ -85,13 +139,16 @@ def structured_call(
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "structured")
 
-    result, completion = client.chat.completions.create_with_completion(
-        model=target_model,
-        messages=messages,
-        response_model=response_model,
-        max_retries=max_retries,
-        temperature=temperature,
-        **kwargs,
+    result, completion = _with_retries(
+        lambda: client.chat.completions.create_with_completion(
+            model=target_model,
+            messages=messages,
+            response_model=response_model,
+            max_retries=max_retries,
+            temperature=temperature,
+            **kwargs,
+        ),
+        kind="structured",
     )
 
     usage = getattr(completion, "usage", None)
@@ -114,12 +171,15 @@ def stream_call(
     """Raw streaming generator. Callers consume the stream directly."""
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "stream")
-    return litellm.completion(
-        model=target_model,
-        messages=messages,
-        stream=True,
-        temperature=temperature,
-        **kwargs,
+    return _with_retries(
+        lambda: litellm.completion(
+            model=target_model,
+            messages=messages,
+            stream=True,
+            temperature=temperature,
+            **kwargs,
+        ),
+        kind="stream",
     )
 
 
@@ -134,12 +194,15 @@ def simple_call(
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "simple")
 
-    stream = litellm.completion(
-        model=target_model,
-        messages=messages,
-        temperature=temperature,
-        stream=True,
-        **kwargs,
+    stream = _with_retries(
+        lambda: litellm.completion(
+            model=target_model,
+            messages=messages,
+            temperature=temperature,
+            stream=True,
+            **kwargs,
+        ),
+        kind="simple",
     )
 
     parts: list[str] = []
