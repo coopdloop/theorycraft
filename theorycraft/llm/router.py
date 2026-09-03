@@ -32,8 +32,8 @@ _RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
     litellm.Timeout,
 )
 
-_MAX_ATTEMPTS = 6
-_BASE_DELAY = 1.0
+_MAX_ATTEMPTS = 8
+_BASE_DELAY = 2.0
 _MAX_DELAY = 60.0
 
 
@@ -82,10 +82,10 @@ def _stream_with_retries(stream_factory: Callable[[], Any], *, kind: str) -> Any
     """
     attempt = 0
     while True:
+        first_chunk = None
         try:
             stream = stream_factory()
             # Force the first chunk to fail fast if rate-limited
-            first_chunk = None
             for chunk in stream:
                 if first_chunk is None:
                     first_chunk = chunk
@@ -178,6 +178,7 @@ def structured_call(
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "structured")
 
+    creds = get_settings().llm_credentials
     result, completion = _with_retries(
         lambda: client.chat.completions.create_with_completion(
             model=target_model,
@@ -185,6 +186,7 @@ def structured_call(
             response_model=response_model,
             max_retries=max_retries,
             temperature=temperature,
+            **creds,
             **kwargs,
         ),
         kind="structured",
@@ -210,12 +212,14 @@ def stream_call(
     """Raw streaming generator. Callers consume the stream directly."""
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "stream")
+    creds = get_settings().llm_credentials
     return _stream_with_retries(
         lambda: litellm.completion(
             model=target_model,
             messages=messages,
             stream=True,
             temperature=temperature,
+            **creds,
             **kwargs,
         ),
         kind="stream",
@@ -233,12 +237,14 @@ def simple_call(
     target_model = model or get_model()
     _log_call(target_model, messages, temperature, "simple")
 
+    creds = get_settings().llm_credentials
     stream = _stream_with_retries(
         lambda: litellm.completion(
             model=target_model,
             messages=messages,
             temperature=temperature,
             stream=True,
+            **creds,
             **kwargs,
         ),
         kind="simple",

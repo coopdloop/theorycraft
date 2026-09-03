@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     model: str = Field(default="claude-sonnet-4-6", alias="THEORYCRAFT_MODEL")
     anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
+    openrouter_api_key: Optional[str] = Field(default=None, alias="OPENROUTER_API_KEY")
+    # Optional override for the OpenRouter / OpenAI-compatible gateway base URL.
+    llm_api_base: Optional[str] = Field(default=None, alias="THEORYCRAFT_LLM_API_BASE")
 
     # Langfuse
     langfuse_public_key: Optional[str] = Field(default=None, alias="LANGFUSE_PUBLIC_KEY")
@@ -50,6 +53,23 @@ class Settings(BaseSettings):
     @classmethod
     def expand_path(cls, v: str | Path) -> Path:
         return Path(v).expanduser().resolve()
+
+    @property
+    def llm_credentials(self) -> dict:
+        """Explicit api_key / api_base kwargs for litellm based on the model prefix."""
+        creds: dict = {}
+        if self.llm_api_base:
+            creds["api_base"] = self.llm_api_base
+        if self.model.startswith("openrouter/"):
+            if self.openrouter_api_key:
+                creds["api_key"] = self.openrouter_api_key
+        elif self.model.startswith(("gpt-", "o1", "o3", "openai/")):
+            if self.openai_api_key:
+                creds["api_key"] = self.openai_api_key
+        else:
+            if self.anthropic_api_key:
+                creds["api_key"] = self.anthropic_api_key
+        return creds
 
     @property
     def langfuse_enabled(self) -> bool:
