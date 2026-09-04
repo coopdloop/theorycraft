@@ -242,19 +242,31 @@ def _run_graph_loop_v2(
             hud.status = "thinking…"
             live.update(_make_hud(hud))
 
-            for chunk in graph.stream(input_to_send, config, stream_mode="updates"):
-                if "__interrupt__" in chunk:
-                    interrupt_payload = chunk["__interrupt__"]
-                else:
-                    for node_name in chunk:
-                        if node_name in DESIGN_NODES:
-                            label = DESIGN_NODE_LABELS.get(node_name, node_name)
-                            console.print(f"[dim]  ✓ {label}[/]")
-                            progress.advance()
-                            hud.status = f"✓ {label}"
-                        elif node_name in _PROCESSING_LABELS:
-                            hud.status = _PROCESSING_LABELS[node_name] + "…"
-                    live.update(_make_hud(hud))
+            try:
+                for chunk in graph.stream(input_to_send, config, stream_mode="updates"):
+                    if "__interrupt__" in chunk:
+                        interrupt_payload = chunk["__interrupt__"]
+                    else:
+                        for node_name in chunk:
+                            if node_name in DESIGN_NODES:
+                                label = DESIGN_NODE_LABELS.get(node_name, node_name)
+                                console.print(f"[dim]  ✓ {label}[/]")
+                                progress.advance()
+                                hud.status = f"✓ {label}"
+                            elif node_name in _PROCESSING_LABELS:
+                                hud.status = _PROCESSING_LABELS[node_name] + "…"
+                        live.update(_make_hud(hud))
+            except Exception as exc:
+                live.stop()
+                session_name = config.get("configurable", {}).get("thread_id", "")
+                console.print(Panel(
+                    f"[red]{escape(str(exc))}[/]\n\n"
+                    f"[dim]Progress up to the last completed step is saved. Resume with:[/]\n"
+                    f"[bold]theorycraft resume {session_name}[/]",
+                    title="[bold red]session interrupted by an error[/]",
+                    border_style="red",
+                ))
+                raise typer.Exit(1)
 
             if interrupt_payload is None:
                 live.stop()

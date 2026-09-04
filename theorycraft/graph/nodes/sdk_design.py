@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from theorycraft.graph.state import TheoryCraftState
-from theorycraft.llm.router import structured_call
+from theorycraft.llm.router import safe_structured_call
 from theorycraft.models.sdk import FrontendSDK
 from theorycraft.telemetry.langfuse import node_trace
 
@@ -56,5 +56,14 @@ def sdk_design(state: TheoryCraftState) -> dict:
             ),
         },
     ]
-    output = structured_call(SDKOutput, messages, temperature=0.4)
-    return {"sdk_draft": output.sdk.model_dump()}
+    result, error = safe_structured_call(SDKOutput, messages, temperature=0.4)
+    if result is None:
+        return {
+            "sdk_draft": {
+                "package_name": f"@{state['session_name']}/client",
+                "language": "typescript", "clients": [], "shared_types": [],
+                "auth_pattern": "", "base_url_config": "",
+            },
+            "errors": [f"sdk_design failed: {error}"],
+        }
+    return {"sdk_draft": result.sdk.model_dump()}

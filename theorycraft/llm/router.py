@@ -202,6 +202,37 @@ def structured_call(
     return result
 
 
+def safe_structured_call(
+    response_model: Type[T],
+    messages: list[dict],
+    *,
+    model: Optional[str] = None,
+    max_retries: int = 3,
+    temperature: float = 0.2,
+    **kwargs: Any,
+) -> tuple[Optional[T], Optional[str]]:
+    """Like structured_call, but never raises on LLM/validation failure.
+
+    Returns (result, None) on success or (None, error_message) on failure,
+    so a single bad generation doesn't crash the whole graph run (and,
+    critically, doesn't discard sibling parallel-node output already paid
+    for in the same superstep).
+    """
+    try:
+        result = structured_call(
+            response_model,
+            messages,
+            model=model,
+            max_retries=max_retries,
+            temperature=temperature,
+            **kwargs,
+        )
+        return result, None
+    except Exception as exc:
+        logger.error("structured call failed: %s", exc)
+        return None, str(exc)
+
+
 def stream_call(
     messages: list[dict],
     *,

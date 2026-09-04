@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
-
 from theorycraft.graph.state import TheoryCraftState
-from theorycraft.llm.router import structured_call
+from theorycraft.llm.router import safe_structured_call
 from theorycraft.models.frontend import FrontendSpec
 from theorycraft.telemetry.langfuse import node_trace
 
@@ -19,10 +17,6 @@ You have creative latitude here — be opinionated about:
 
 The result should feel like a thoughtful product, not just a CRUD interface.
 """
-
-
-class FrontendOutput(BaseModel):
-    frontend: FrontendSpec
 
 
 @node_trace("frontend_design")
@@ -45,5 +39,14 @@ def frontend_design(state: TheoryCraftState) -> dict:
             ),
         },
     ]
-    output = structured_call(FrontendOutput, messages, temperature=0.6)
-    return {"frontend_draft": output.frontend.model_dump()}
+    result, error = safe_structured_call(FrontendSpec, messages, temperature=0.6)
+    if result is None:
+        return {
+            "frontend_draft": {
+                "pages": [], "shared_components": [], "design_notes": "",
+                "framework": "react", "state_management": "zustand",
+                "routing": "react-router-v6",
+            },
+            "errors": [f"frontend_design failed: {error}"],
+        }
+    return {"frontend_draft": result.model_dump()}

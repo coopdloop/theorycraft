@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from theorycraft.graph.state import TheoryCraftState
-from theorycraft.llm.router import structured_call
+from theorycraft.llm.router import safe_structured_call
 from theorycraft.models.schema import DBSchema, DBTable
 from theorycraft.telemetry.langfuse import node_trace
 
@@ -51,5 +51,10 @@ def database_design(state: TheoryCraftState) -> dict:
             ),
         },
     ]
-    output = structured_call(DBDesignOutput, messages, temperature=0.1)
-    return {"db_schema_draft": output.db_schema.model_dump()}
+    result, error = safe_structured_call(DBDesignOutput, messages, temperature=0.1)
+    if result is None:
+        return {
+            "db_schema_draft": {"tables": [], "raw_sql": ""},
+            "errors": [f"database_design failed: {error}"],
+        }
+    return {"db_schema_draft": result.db_schema.model_dump()}

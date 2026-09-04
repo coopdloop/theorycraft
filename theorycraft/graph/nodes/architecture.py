@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from theorycraft.graph.state import TheoryCraftState
-from theorycraft.llm.router import structured_call
+from theorycraft.llm.router import safe_structured_call
 from theorycraft.models.product import ADR, ArchitectureDecisions
 from theorycraft.telemetry.langfuse import node_trace
 
@@ -42,5 +42,10 @@ def architecture(state: TheoryCraftState) -> dict:
             ),
         },
     ]
-    output = structured_call(ArchitectureOutput, messages, temperature=0.1)
-    return {"architecture_draft": output.architecture.model_dump()}
+    result, error = safe_structured_call(ArchitectureOutput, messages, temperature=0.1)
+    if result is None:
+        return {
+            "architecture_draft": {"adrs": [], "tech_choices": {}, "system_diagram_description": ""},
+            "errors": [f"architecture failed: {error}"],
+        }
+    return {"architecture_draft": result.architecture.model_dump()}

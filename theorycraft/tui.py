@@ -341,6 +341,23 @@ class TheoryCraftApp(App[None]):
                 expand=False,
             ))
 
+    # ── Error (UI thread) ───────────────────────────────────────────────────
+
+    def _on_error(self, exc_text: str, session_name: str) -> None:
+        self._write(Panel(
+            f"[red]{escape(exc_text)}[/]\n\n"
+            f"[dim]Progress up to the last completed step is saved. Resume with:[/]\n"
+            f"[bold]theorycraft resume {session_name}[/]",
+            title="[bold red]session interrupted by an error[/]",
+            border_style="red",
+        ))
+        assert self._hud is not None
+        self._hud.update_hud(status="error — see above", spinning=False)
+        self._session_done = True
+        inp = self.query_one("#input", Input)
+        inp.disabled = True
+        inp.placeholder = "session errored — press q or esc to exit"
+
     # ── Completion (UI thread) ────────────────────────────────────────────────
 
     def _on_complete(self, state: dict) -> None:
@@ -396,19 +413,24 @@ class TheoryCraftApp(App[None]):
             interrupt_payload = None
             self.call_from_thread(hud.update_hud, status="thinking…", spinning=True)
 
-            for chunk in self.graph.stream(input_to_send, self.config, stream_mode="updates"):
-                if "__interrupt__" in chunk:
-                    interrupt_payload = chunk["__interrupt__"]
-                else:
-                    for node_name in chunk:
-                        if node_name in DESIGN_NODES:
-                            label = DESIGN_NODE_LABELS.get(node_name, node_name)
-                            self.call_from_thread(self._on_design_complete, label)
-                        elif node_name in _PROCESSING_LABELS:
-                            self.call_from_thread(
-                                self._on_processing,
-                                _PROCESSING_LABELS[node_name] + "…",
-                            )
+            try:
+                for chunk in self.graph.stream(input_to_send, self.config, stream_mode="updates"):
+                    if "__interrupt__" in chunk:
+                        interrupt_payload = chunk["__interrupt__"]
+                    else:
+                        for node_name in chunk:
+                            if node_name in DESIGN_NODES:
+                                label = DESIGN_NODE_LABELS.get(node_name, node_name)
+                                self.call_from_thread(self._on_design_complete, label)
+                            elif node_name in _PROCESSING_LABELS:
+                                self.call_from_thread(
+                                    self._on_processing,
+                                    _PROCESSING_LABELS[node_name] + "…",
+                                )
+            except Exception as exc:
+                session_name = self.config.get("configurable", {}).get("thread_id", "")
+                self.call_from_thread(self._on_error, str(exc), session_name)
+                return
 
             if interrupt_payload is None:
                 state = dict(self.graph.get_state(self.config).values)
