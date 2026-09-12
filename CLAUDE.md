@@ -9,16 +9,20 @@ After completing a significant feature (not small fixes, edits, or exploratory w
 uv tool install git+https://github.com/coopdloop/super-commit-cli.git
 ```
 
-Always include a co-author footer in every commit:
+Always include a footer crediting the acting model by name:
 
 ```
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+Agent assisted coded with: <model name>
 ```
+
+Use the model actually running the task, read from the `PI_MODEL` environment
+variable (e.g. `claude-opus-5` -> `Agent assisted coded with: claude-opus-5`).
+Do not hardcode a model name.
 
 When using non-interactive mode, pass it via `--footer`:
 
 ```bash
-sc commit --type feat --subject "..." --footer "Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>" --yes
+sc commit --type feat --subject "..." --footer "Agent assisted coded with: $PI_MODEL" --yes
 ```
 
 To push separately after committing:
