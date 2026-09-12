@@ -34,12 +34,39 @@ _PROCESSING_LABELS: dict[str, str] = {
 }
 
 _READY = {"/ready", "ready", "/go", "go"}
+_SUBMIT = {"submit", "/submit", "done", "/done", "ok"}
+_SKIP = {"skip", "/skip", "-"}
 
 
 def _parse_questions(text: str) -> list[str]:
-    parts = re.split(r"\n\s*\d+[.)]\s*", text.strip())
-    questions = [p.strip() for p in parts if p.strip()]
-    return questions if len(questions) > 1 else [text.strip()]
+    numbered = re.findall(
+        r"(?:^|\n)\s*\d+[.)]\s*(.+?)(?=\n\s*\d+[.)]\s|\Z)",
+        text.strip(),
+        re.DOTALL,
+    )
+    questions = [q.strip() for q in numbered if q.strip()]
+    return questions if questions else [text.strip()]
+
+
+class _QuestionFlow:
+    """Tracks a clarify round asked one question at a time, then reviewed."""
+
+    def __init__(self, questions: list[str], round_num: int) -> None:
+        self.questions = questions
+        self.answers: list[str] = [""] * len(questions)
+        self.idx = 0
+        self.round = round_num
+        self.reviewing = False
+        self.editing = False
+
+    @property
+    def total(self) -> int:
+        return len(self.questions)
+
+    def compose_answer(self) -> str:
+        return "\n".join(
+            f"{i}. {a or '(no answer)'}" for i, a in enumerate(self.answers, 1)
+        )
 
 
 # ── HUD sidebar ───────────────────────────────────────────────────────────────
@@ -204,6 +231,7 @@ class TheoryCraftApp(App[None]):
         self._hud: Optional[HUDWidget] = None
         self._log: Optional[RichLog] = None
         self._session_done = False
+        self._flow: Optional[_QuestionFlow] = None
 
     def compose(self) -> ComposeResult:
         model_short = self.model.split("/")[-1]
@@ -263,6 +291,8 @@ class TheoryCraftApp(App[None]):
 
     def _show_interrupt(self, interrupt_value: dict) -> None:
         itype = interrupt_value.get("type", "unknown")
+        if itype != "clarify":
+            self._flow = None
 
         if itype == "intake":
             self._write(Panel(
@@ -275,13 +305,13 @@ class TheoryCraftApp(App[None]):
         elif itype == "clarify":
             questions = _parse_questions(interrupt_value.get("questions", ""))
             rnd = interrupt_value.get("round", 1)
-            for i, q in enumerate(questions, 1):
-                self._write(Panel(
-                    escape(q),
-                    title=f"[yellow]clarify[/] [dim](round {rnd} · {i}/{len(questions)})[/]",
-                    border_style="yellow",
-                ))
-            self._set_input_enabled("[bold yellow]answer[/]")
+            self._flow = _QuestionFlow(questions, rnd)
+            self._write(Text.from_markup(
+                f"[dim]{len(questions)} clarifying question"
+                f"{'s' if len(questions) != 1 else ''} — one at a time. "
+                f"[bold]back[/] to revisit · [bold]skip[/] to leave blank.[/]"
+            ))
+            self._ask_current_question()
 
         elif itype == "ideate":
             self._write(Panel(
@@ -309,6 +339,96 @@ class TheoryCraftApp(App[None]):
         else:
             self._write(Panel(escape(str(interrupt_value)), title="[red]interrupt[/]", border_style="red"))
             self._set_input_enabled("[bold]>[/]")
+
+    # ── Stepwise clarify flow (UI thread) ─────────────────────────────────────
+
+    def _ask_current_question(self) -> None:
+        flow = self._flow
+        assert flow is not None
+        q = flow.questions[flow.idx]
+        existing = flow.answers[flow.idx]
+        body = escape(q)
+        if existing:
+            body += f"\n\n[dim]current answer: {escape(existing)}[/]"
+        self._write(Panel(
+            body,
+            title=(
+                f"[yellow]clarify[/] [dim](round {flow.round} · "
+                f"question {flow.idx + 1}/{flow.total})[/]"
+            ),
+            border_style="yellow",
+        ))
+        self._set_input_enabled(f"[bold yellow]{flow.idx + 1}/{flow.total}[/]")
+
+    def _show_clarify_review(self) -> None:
+        flow = self._flow
+        assert flow is not None
+        flow.reviewing = True
+        tree = Tree("[bold]Your answers[/]")
+        for i, (q, a) in enumerate(zip(flow.questions, flow.answers), 1):
+            branch = tree.add(f"[yellow]{i}.[/] {escape(q)}")
+            branch.add(escape(a) if a else "[dim italic]no answer[/]")
+        self._write(Panel(tree, title="[magenta]review answers[/]", border_style="magenta"))
+        self._write(Text.from_markup(
+            "[dim]Commands: [bold]submit[/] · [bold]edit <n>[/] · [bold]back[/][/]"
+        ))
+        self._set_input_enabled("[bold magenta]review[/]")
+
+    def _handle_clarify_input(self, user_input: str) -> Optional[str]:
+        """Advance the stepwise clarify flow. Returns the composed answer when done."""
+        flow = self._flow
+        assert flow is not None
+        cmd = user_input.strip().lower()
+
+        if flow.reviewing:
+            if cmd in _SUBMIT:
+                self._flow = None
+                return flow.compose_answer()
+            if cmd == "back":
+                flow.reviewing = False
+                flow.editing = True
+                flow.idx = flow.total - 1
+                self._ask_current_question()
+                return None
+            if cmd.startswith("edit"):
+                target = cmd[4:].strip()
+                if target.isdigit() and 1 <= int(target) <= flow.total:
+                    flow.reviewing = False
+                    flow.editing = True
+                    flow.idx = int(target) - 1
+                    self._ask_current_question()
+                    return None
+            self._write(Text.from_markup(
+                "[red]Unknown command.[/] [dim]Use [bold]submit[/], "
+                "[bold]edit <n>[/], or [bold]back[/].[/]"
+            ))
+            self._set_input_enabled("[bold magenta]review[/]")
+            return None
+
+        if cmd == "back" and flow.idx > 0:
+            flow.editing = False
+            flow.idx -= 1
+            self._ask_current_question()
+            return None
+
+        flow.answers[flow.idx] = "" if cmd in _SKIP else user_input.strip()
+
+        if flow.editing:
+            flow.editing = False
+            self._show_clarify_review()
+            return None
+
+        if flow.idx + 1 < flow.total:
+            flow.idx += 1
+            self._ask_current_question()
+            return None
+
+        if flow.total == 1:
+            self._flow = None
+            return flow.answers[0]
+
+        self._show_clarify_review()
+        return None
 
     def _on_design_complete(self, label: str) -> None:
         self._write(Text.from_markup(f"[dim]  ✓ {label}[/]"))
@@ -393,6 +513,13 @@ class TheoryCraftApp(App[None]):
             return
         event.input.clear()
         self._set_input_disabled(user_input)
+
+        if self._flow is not None:
+            composed = self._handle_clarify_input(user_input)
+            if composed is None:
+                return
+            user_input = composed
+
         self._input_queue.put(user_input)
         self._input_event.set()
 
