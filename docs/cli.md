@@ -41,6 +41,24 @@ uv run theorycraft new "add dark mode" --github pr --github-repo myorg/myapp
 uv run theorycraft new
 ```
 
+#### How names are chosen
+
+Two different names are produced during a run:
+
+| Name | Source | Where it shows up |
+|---|---|---|
+| **Session name** | The idea prompt, with filler words (`i`, `want`, `to`, `build`, `a`…) dropped, slugified, and truncated to 48 characters **on a word boundary**. Override with `--name`. | `~/.theorycraft/sessions/<name>.db`, `./<name>/product.json`, `theorycraft resume <name>` |
+| **Repo name** | The product name from the spec's `vision` section, falling back to the session slug. Suffix: `-spec`. | `github.com/<org>/<product>-spec` |
+
+The repo name reserves room for its `-spec` suffix, so the suffix is never the
+part that gets cut. GitHub caps repo names at 100 characters
+(`theorycraft.naming.GITHUB_REPO_MAX_LENGTH`). If the repo name is already taken
+by another repository on the account, theorycraft retries as
+`<name>-spec-2`, `<name>-spec-3`, and so on.
+
+So `"An LLM CLI chat where you talk with and I spec"` that names its product
+*Paerhaps* publishes as `paerhaps-spec`, not as the whole truncated sentence.
+
 ---
 
 ### `theorycraft resume`

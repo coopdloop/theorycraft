@@ -144,8 +144,12 @@ After approval:
 
 ```
 ✓ Spec written to ./link-shortener-with-analytics/product.json (47.3 KB)
-✓ GitHub: https://github.com/coopdloop/link-shortener-with-analytics-spec
+✓ GitHub: https://github.com/coopdloop/sniplink-spec
 ```
+
+The repo is named after the product the session settled on (`SnipLink`), not
+the prompt you typed — see [How names are chosen](cli.md#how-names-are-chosen).
+The local spec folder keeps the session name so `theorycraft resume` still works.
 
 The new repo will contain:
 - `product.json` — the full spec

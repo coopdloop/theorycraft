@@ -56,8 +56,8 @@ def _get_session_db(session_name: str) -> str:
 
 
 def _slugify(text: str) -> str:
-    from slugify import slugify
-    return slugify(text, max_length=40) or "my-product"
+    from theorycraft import naming
+    return naming.idea_slug(text) or "my-product"
 
 
 def _parse_questions(text: str) -> list[str]:

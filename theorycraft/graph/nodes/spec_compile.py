@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from theorycraft import naming
 from theorycraft.graph.state import TheoryCraftState
 from theorycraft.llm.router import simple_call
 from theorycraft.models.product import (
@@ -23,6 +24,9 @@ _VISION_SYSTEM = """\
 Extract a structured product vision from the concept summary.
 Return ONLY a JSON object with these fields:
 name, tagline, description, goals (list), target_users (list), problem_statement, success_metrics (list)
+
+"name" is the product's actual name — 1-3 words, no sentence fragments, no filler like "a" or "the".
+It becomes the GitHub repo name, so keep it short and distinctive.
 """
 
 _INFRA_SYSTEM = """\
@@ -34,7 +38,7 @@ estimated_complexity ("low"|"medium"|"high")
 """
 
 
-def _extract_vision(concept: str) -> ProductVision:
+def _extract_vision(concept: str, known_name: str = "") -> ProductVision:
     resp = simple_call(
         [
             {"role": "system", "content": _VISION_SYSTEM},
@@ -46,12 +50,16 @@ def _extract_vision(concept: str) -> ProductVision:
         # Strip markdown code fences if present
         cleaned = resp.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         data = json.loads(cleaned)
-        return ProductVision(**data)
+        vision = ProductVision(**data)
+        # The ideation step already agreed a name with the user — trust it when
+        # the extractor returned something vaguer than what we already knew.
+        if known_name and not vision.name.strip():
+            vision.name = known_name
+        return vision
     except Exception:
         # Fallback minimal vision
-        name = concept.split("\n")[0][:60].strip()
         return ProductVision(
-            name=name,
+            name=known_name or naming.title_from_concept(concept),
             tagline="",
             description=concept[:500],
             goals=[],
@@ -99,7 +107,8 @@ def _extract_infra(state: TheoryCraftState) -> InfrastructureHints:
 @node_trace("spec_compile")
 def spec_compile(state: TheoryCraftState) -> dict:
     """Assemble all design drafts into the final ProductSpec JSON."""
-    vision = _extract_vision(state.get("concept_summary", ""))
+    agreed_name = (state.get("product_name") or "").strip()
+    vision = _extract_vision(state.get("concept_summary", ""), agreed_name)
 
     services = [ServiceSpec(**s) for s in (state.get("services_draft") or [])]
     api_routes = [APIRoute(**r) for r in (state.get("api_routes_draft") or [])]
@@ -114,7 +123,7 @@ def spec_compile(state: TheoryCraftState) -> dict:
     frontend = FrontendSpec(**frontend_data)
 
     sdk_data = state.get("sdk_draft") or {
-        "package_name": f"@{state['session_name']}/client",
+        "package_name": f"@{naming.package_scope(vision.name)}/client",
         "language": "typescript",
         "clients": [],
         "shared_types": [],

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from theorycraft import naming
 from theorycraft.graph.state import TheoryCraftState
 from theorycraft.llm.router import safe_structured_call
 from theorycraft.models.sdk import FrontendSDK
@@ -26,10 +27,15 @@ class SDKOutput(BaseModel):
     sdk: FrontendSDK
 
 
+def _session_title(state: TheoryCraftState) -> str:
+    """Readable product name for sessions that never got one from ideation."""
+    return naming.package_scope(state.get("session_name", "app")).replace("-", " ").title()
+
+
 @node_trace("sdk_design")
 def sdk_design(state: TheoryCraftState) -> dict:
     """Generate TypeScript SDK interface spec (creative, idiomatic)."""
-    product_name = state.get("session_name", "app").replace("-", " ").title()
+    product_name = (state.get("product_name") or "").strip() or _session_title(state)
 
     routes_text = ""
     if state.get("api_routes_draft"):
@@ -60,7 +66,7 @@ def sdk_design(state: TheoryCraftState) -> dict:
     if result is None:
         return {
             "sdk_draft": {
-                "package_name": f"@{state['session_name']}/client",
+                "package_name": f"@{naming.package_scope(product_name or state['session_name'])}/client",
                 "language": "typescript", "clients": [], "shared_types": [],
                 "auth_pattern": "", "base_url_config": "",
             },

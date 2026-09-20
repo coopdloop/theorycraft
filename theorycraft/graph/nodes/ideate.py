@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from langgraph.types import interrupt
 
+from theorycraft import naming
 from theorycraft.graph.state import TheoryCraftState
 from theorycraft.llm.router import simple_call
 from theorycraft.telemetry.langfuse import node_trace
@@ -10,7 +11,7 @@ _IDEATE_SYSTEM = """\
 You are a senior product architect and creative technologist.
 Your job is to collaboratively theory-craft a product idea with the user.
 Based on the idea and any clarifications provided, generate a rich product concept overview covering:
-- Product name and memorable tagline
+- Product name (short and distinctive — 1-3 words, it becomes the GitHub repo name) and a memorable tagline
 - Core problem solved and why it matters
 - Key features and user flows
 - Suggested tech stack (be specific: Go/Python services, React SPA, PostgreSQL, etc.)
@@ -65,10 +66,14 @@ def ideate(state: TheoryCraftState) -> dict:
 
     user_input: str = result if isinstance(result, str) else result.get("input", "")
 
+    # The name the model chose drives the repo, SDK package, and README title.
+    chosen_name = naming.product_name_from_concept(concept)
+
     if user_input.strip().lower() in {"/ready", "ready", "/go", "go"}:
         return {
             "concept_summary": concept,
             "concept_approved": True,
+            "product_name": chosen_name,
         }
 
     if user_input.strip().lower() in {"/clarify", "clarify", "/more", "more"}:
@@ -76,6 +81,7 @@ def ideate(state: TheoryCraftState) -> dict:
             "concept_summary": concept,
             "concept_approved": False,
             "needs_more_clarification": True,
+            "product_name": chosen_name,
         }
 
     # User gave more feedback — append to concept and loop
@@ -84,4 +90,5 @@ def ideate(state: TheoryCraftState) -> dict:
         "concept_summary": refined,
         "concept_approved": False,
         "needs_more_clarification": False,
+        "product_name": chosen_name,
     }

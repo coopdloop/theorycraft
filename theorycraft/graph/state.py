@@ -45,6 +45,7 @@ class TheoryCraftState(TypedDict):
     # ── Concept ───────────────────────────────────────────────────────────
     concept_summary: str
     concept_approved: bool
+    product_name: Optional[str]
 
     # ── Design drafts (set by respective nodes) ───────────────────────────
     services_draft: Optional[list[dict]]
@@ -98,6 +99,7 @@ def initial_state(
         needs_more_clarification=False,
         concept_summary="",
         concept_approved=False,
+        product_name="",
         services_draft=None,
         architecture_draft=None,
         api_routes_draft=None,

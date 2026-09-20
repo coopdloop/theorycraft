@@ -94,11 +94,13 @@ def _build_app(bot_token: str):
 
         # ── Start a new session ───────────────────────────────────────────
         cfg = get_settings()
-        from slugify import slugify
+        from theorycraft import naming
         from theorycraft.utils import unique_session_name
 
         session_id = str(uuid.uuid4())
-        base_name = slugify(text, max_length=40) if text else f"session-{session_id[:8]}"
+        base_name = naming.idea_slug(text) if text else f"session-{session_id[:8]}"
+        if not base_name:
+            base_name = f"session-{session_id[:8]}"
         session_name = unique_session_name(base_name, cfg.sessions_dir)
         output_dir = str(cfg.output_dir / session_name)
         session_db_path = str(cfg.sessions_dir / f"{session_name}.db")
